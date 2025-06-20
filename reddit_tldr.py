@@ -22,7 +22,7 @@ def fetch_submission_data(url):
     and len(c.body.strip()) > 10 #short comments
     and "i am a bot" not in c.body.strip().lower() #bot comments
     and "http" not in c.body.strip().lower()  #link only comments
-    and (c.author is None or "bot" not in c.author.name.lower())
+    and (c.author is None or "moderator" not in c.author.name.lower())
     and not any(banned_word in c.body.lower() for banned_word in banned_words)
 ]
     

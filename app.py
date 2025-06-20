@@ -1,13 +1,17 @@
 from flask import Flask, request, render_template
 from reddit_tldr import fetch_submission_data
 from openai import OpenAI
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
 
 app = Flask(__name__)
 
 # Hugging Face / OpenRouter client setup
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
-    api_key="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"
+    api_key = os.getenv("OPENROUTER_API_KEY")
 )
 
 def summarize_with_openrouter(paragraph):
