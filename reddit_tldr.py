@@ -8,7 +8,10 @@ reddit = praw.Reddit(
     client_secret="YwJccYDyxb-N4WLuUTsgPPZz-UheJQ",
     user_agent="reddit-tldr-bot by u/Special_Big740"
 )
+
+
 def fetch_submission_data(url):
+    banned_words = ["nigga", "nigger", "faggot", "pedophile", "pdfile", "retard"]
     submission = reddit.submission(url=url)
     submission.comments.replace_more(limit=0)
     comments = [
@@ -20,7 +23,7 @@ def fetch_submission_data(url):
     and "i am a bot" not in c.body.strip().lower() #bot comments
     and "http" not in c.body.strip().lower()  #link only comments
     and (c.author is None or "bot" not in c.author.name.lower())
-
+    and not any(banned_word in c.body.lower() for banned_word in banned_words)
 ]
     
     # ---- format comment paragraph ----

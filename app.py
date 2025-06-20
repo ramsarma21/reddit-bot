@@ -15,7 +15,10 @@ def summarize_with_openrouter(paragraph):
         "This text is from a Reddit post, specifically the comments under it. "
         "Summarize this text and make a TLDR paragraph first, and then numbered bullet points "
         "with important points and perspectives from comments and replies. "
-        "DO NOT give anything further. Make it clean, readable, and concise.\n\n"
+        "DO NOT give anything further. Make it clean, readable, and concise. "
+        "Try to make it 5-6 bullet points, they can be a bit longer, but make sure to cover important parts. "
+         "Also do not add toxic and insulting comments without value to the summaries. "
+         " \n\n"
         + paragraph
     )
 
