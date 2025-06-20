@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Reddit TL;DR</title>
+</head>
+<body>
+    <h1>Reddit TL;DR Bot</h1>
+
+    <form method="post">
+        <input type="text" name="url" size="80" placeholder="Paste Reddit post URL here" required>
+        <button type="submit">Summarize</button>
+    </form>
+
+    {% if error %}
+        <p style="color:red;">Error: {{ error }}</p>
+    {% endif %}
+
+    {% if title %}
+        <h2>{{ title }}</h2>
+        <p><strong>Subreddit:</strong> {{ subreddit }}</p>
+        {% if selftext %}
+            <p><strong>Post Text:</strong> {{ selftext }}</p>
+        {% endif %}
+    {% endif %}
+
+    {% if image_url %}
+        <h3>Image:</h3>
+        <img src="{{ image_url }}" width="500">
+    {% endif %}
+
+    {% if video_url %}
+        <h3>Video:</h3>
+        <video width="500" controls>
+            <source src="{{ video_url }}" type="video/mp4">
+            Your browser does not support the video tag.
+        </video>
+    {% endif %}
+
+    {% if summary %}
+        <h2>AI-Generated TL;DR</h2>
+        <pre>{{ summary }}</pre>
+    {% endif %}
+</body>
+</html>

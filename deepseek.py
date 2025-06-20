@@ -1,7 +1,9 @@
 from openai import OpenAI
-import reddit_tldr
+from reddit_tldr import fetch_submission_data
 
-para = reddit_tldr.paragraph
+url = input("Enter Reddit post URL: ")
+data = fetch_submission_data(url)
+para = data["paragraph"]
 client = OpenAI(
   base_url="https://openrouter.ai/api/v1",
   api_key="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",

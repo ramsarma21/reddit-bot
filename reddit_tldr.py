@@ -8,42 +8,43 @@ reddit = praw.Reddit(
     client_secret="YwJccYDyxb-N4WLuUTsgPPZz-UheJQ",
     user_agent="reddit-tldr-bot by u/Special_Big740"
 )
+def fetch_submission_data(url):
+    submission = reddit.submission(url=url)
+    submission.comments.replace_more(limit=0)
+    comments = [
+    c.body.strip()
+    for c in submission.comments.list()
+    if hasattr(c, "body")
+    and c.body.lower() not in ("[deleted]", "[removed]") #deleted comments
+    and len(c.body.strip()) > 10 #short comments
+    and "i am a bot" not in c.body.strip().lower() #bot comments
+    and "http" not in c.body.strip().lower()  #link only comments
+    and (c.author is None or "bot" not in c.author.name.lower())
 
-url = input("Enter your url: ")
-submission = reddit.submission(url=url)
-# print(submission.title)  # to make it non-lazy  **CHECK ALL FUNCTIONS**
-# pprint.pprint(vars(submission))
+]
+    
+    # ---- format comment paragraph ----
+    text = " ".join(comments).replace("\n", "").strip('"')
+    sentences = text.split(".")
+    sentences = [s.strip() + ". " for s in sentences if s.strip()]
+    paragraph = "".join(sentences[:70])
 
-if submission.post_hint == "hosted:image":  #check if post has image and store link
-    image_link = (submission.preview['images'][0]['source']['url'])
-if submission.post_hint == "hosted:video":  #check if post has video and store link
-    video_link = submission.media['reddit_video']['fallback_url']
-print("Post title: " + submission.title)
-if (submission.selftext != ""):
-    print("Text content: " + submission.selftext)
-print("Subreddit of origin: " + str(submission.subreddit))
+    # ---- extract image or video link if available ----
+    image_url = None
+    video_url = None
 
-list_comments = [] #create comment list
+    if hasattr(submission, "post_hint"):
+        if submission.post_hint == "image":
+            image_url = submission.preview['images'][0]['source']['url']
+        elif submission.post_hint == "hosted:video":
+            video_url = submission.media['reddit_video']['fallback_url']
 
-submission.comments.replace_more(limit=0)  #add comments to comment list
-for comment in submission.comments.list():
-    list_comments.append(comment.body)
-
-#**FORMATTING**
-a=list(map(str,list_comments)) 
-b=" ".join(a)
-b=b.replace(str("\n"),"")
-b=b.strip('"')
-b=b.split(".")  #split each index into sentences
-final_list=list(map(str,b))
-
-for i in range(len(final_list)): #add periods to each sentence
-    final_list[i] += ". "
-
-paragraph = "" 
-for i in final_list[:70]: #add first 60 sentences
-    paragraph += i + ""         
-
-# print(paragraph)                             
-
+    return {
+        "title": submission.title,
+        "subreddit": str(submission.subreddit),
+        "selftext": submission.selftext,
+        "paragraph": paragraph,
+        "image_url": image_url,
+        "video_url": video_url,
+    }
 
