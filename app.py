@@ -175,7 +175,7 @@ def normalize_reddit_url(raw: str) -> str:
     is_comments = "/comments/" in path
     is_s_short = bool(S_PATH_RE.search(path))
     if not (is_comments or is_s_short):
-        raise ValueError("Please paste a direct post link that contains /comments/, a redd.it shortlink, or an app share link ending in /s/<token>.")
+        raise ValueError("Please paste a direct post link that contains /comments/, /s, or a redd.it shortlink.")
 
     # Normalize to www.reddit.com and strip query/fragment
     return urlunparse(("https", "www.reddit.com", path, "", "", ""))
