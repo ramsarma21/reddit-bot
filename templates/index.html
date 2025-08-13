@@ -4,128 +4,451 @@
     <meta charset="utf-8"/>
     <title>Reddit TL;DR</title>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-      // Simple progress indicator: show spinner & disable button on submit
-      document.addEventListener('DOMContentLoaded', () => {
-        const form = document.getElementById('tldr-form');
-        const btn  = document.getElementById('submit-btn');
-        const spin = document.getElementById('spinner');
 
-        if (form) {
-          form.addEventListener('submit', () => {
-            if (btn) { btn.disabled = true; btn.classList.add('opacity-70', 'cursor-not-allowed'); }
-            if (spin) { spin.classList.remove('hidden'); }
+    <!-- Tailwind: class-based dark mode -->
+    <script>window.tailwind = { config: { darkMode: 'class' } };</script>
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Theme color for mobile bars -->
+    <meta id="meta-theme-color" name="theme-color" content="#f8fafc"/>
+
+    <!-- Theme tokens -->
+    <link rel="stylesheet" href="/static/theme.css"/>
+
+    <!-- Default LIGHT; only enable dark if user previously chose it -->
+    <script>
+      (function () {
+        const KEY = 'theme';
+        try {
+          document.documentElement.classList.remove('dark');
+          let stored = localStorage.getItem(KEY);
+          if (stored !== 'dark' && stored !== 'light') {
+            stored = 'light';
+            localStorage.setItem(KEY, 'light');
+          }
+          if (stored === 'dark') document.documentElement.classList.add('dark');
+          const meta = document.getElementById('meta-theme-color');
+          if (meta) meta.setAttribute('content', stored === 'dark' ? '#0b1220' : '#f8fafc');
+        } catch {}
+      })();
+    </script>
+
+    <style>
+      /* keep the dotted background in CSS (uses theme tokens) */
+      body{
+        background-image:
+          radial-gradient(var(--grid-dot) 1px, transparent 1px),
+          var(--page-gradient);
+        background-size:12px 12px,auto;
+      }
+      .section-divider{border-top:1px solid var(--divider)}
+      .disabled-ui{opacity:.6;pointer-events:none;user-select:none}
+    </style>
+
+    <script>
+      // ---------- Regex + helpers ----------
+      const REDDIT_RE    = /^(https?:\/\/)?((www|old|np|m|new|amp)\.)?reddit\.com\/.*\/comments\/[A-Za-z0-9]+/i;
+      const REDDIT_SHORT = /^(https?:\/\/)?(www\.)?redd\.it\/[A-Za-z0-9]+/i;
+
+      function normalizeRedditUrl(v){
+        if(!v) return v;
+        let url=v.trim();
+        if(!/^\w+:\/\//.test(url)) url='https://'+url;
+        try{
+          const u=new URL(url);
+          const host=u.hostname.toLowerCase();
+          if(host.includes('redd.it')) return `https://${host}${u.pathname}`;
+          return `https://www.reddit.com${u.pathname}`;
+        }catch{ return v; }
+      }
+
+      // ---------- Local recent URLs ----------
+      function loadRecent(){ try{ return JSON.parse(localStorage.getItem('recentUrls')||'[]'); }catch{ return []; } }
+      function saveRecent(url){
+        const arr=loadRecent();
+        const norm=normalizeRedditUrl(url);
+        const next=[norm,...arr.filter(u=>u!==norm)].slice(0,6);
+        localStorage.setItem('recentUrls',JSON.stringify(next));
+      }
+
+     document.addEventListener('DOMContentLoaded',()=>{
+  const form       = document.getElementById('tldr-form');
+  const btn        = document.getElementById('submit-btn');
+  const spin       = document.getElementById('spinner');
+  const urlInput   = document.getElementById('url');
+  const urlMsg     = document.getElementById('url-msg');
+  const etaBox     = document.getElementById('eta');
+  const progress   = document.getElementById('progress');
+  const recentSel  = document.getElementById('recent');
+  const sortSelect = document.querySelector('select[name="sort"]');
+  const maxRadios  = Array.from(document.querySelectorAll('input[name="max_comments"]'));
+  const maxLabels  = Array.from(document.querySelectorAll('[data-max-label]'));
+  const DEFAULT_MAX = '{{ current_max_comments or 500 }}' || '500';
+
+  // NEW: if we just loaded a page with results, clear the URL so the placeholder shows
+  const justLoadedWithResult = spin && spin.dataset.active === '1';
+  if (justLoadedWithResult) {
+    urlInput.value = '';                // show placeholder "www.reddit.com"
+    urlMsg.textContent = '';
+    urlInput.readOnly = false;
+    urlInput.classList.remove('disabled-ui');
+
+    // Re-enable any controls we locked during submit
+    if (recentSel) { recentSel.removeAttribute('disabled'); recentSel.classList.remove('disabled-ui'); }
+    if (sortSelect){ sortSelect.removeAttribute('disabled'); sortSelect.classList.remove('disabled-ui'); }
+    maxRadios.forEach(r => r.removeAttribute('disabled'));
+    maxLabels.forEach(l => l.classList.remove('disabled-ui'));
+
+    // Tidy progress/ETA (optional)
+    if (progress) progress.style.width = '0%';
+    if (etaBox) etaBox.textContent = '';
+  }
+
+        // ----- Theme toggle -----
+        const KEY = 'theme';
+        const themeBtn  = document.getElementById('theme-toggle');
+        const metaTheme = document.getElementById('meta-theme-color');
+        function syncToggleIcon(){
+          const dark = document.documentElement.classList.contains('dark');
+          const moon = document.getElementById('icon-moon');
+          const sun  = document.getElementById('icon-sun');
+          if (moon && sun) { moon.classList.toggle('hidden', dark); sun.classList.toggle('hidden', !dark); }
+          if (metaTheme) metaTheme.setAttribute('content', dark ? '#0b1220' : '#f8fafc');
+        }
+        if (themeBtn) {
+          themeBtn.addEventListener('click', () => {
+            const isDark = document.documentElement.classList.toggle('dark');
+            localStorage.setItem(KEY, isDark ? 'dark' : 'light');
+            syncToggleIcon();
+          });
+          syncToggleIcon();
+        }
+
+        // Populate "Recent posts" dropdown
+        const recent = loadRecent();
+        if(recent.length){
+          recentSel.innerHTML = '<option value="">Recent posts…</option>' +
+            recent.map(u=>`<option value="${u}">${u}</option>`).join('');
+          recentSel.classList.remove('hidden');
+        }
+
+        // Realtime validation
+        function validate(){
+          const v=urlInput.value.trim();
+          if(!v){ urlMsg.textContent=''; btn.disabled=true; return; }
+          const ok = REDDIT_RE.test(v)||REDDIT_SHORT.test(v);
+          urlMsg.textContent = ok ? 'Valid Reddit post URL ✅'
+                                  : 'Paste a Reddit post link (must include /comments/ or redd.it)';
+          urlMsg.className   = ok ? 'text-emerald-700 text-xs' : 'text-rose-600 text-xs';
+          btn.disabled = !ok;
+        }
+        validate();
+
+        urlInput.addEventListener('input',()=>{
+          const cur=urlInput.value;
+          const norm=normalizeRedditUrl(cur);
+          if(norm && (REDDIT_RE.test(cur)||REDDIT_SHORT.test(cur)) && cur!==norm){
+            urlInput.value=norm;
+          }
+          validate();
+        });
+
+        // ETA + progress (rough)
+        function estimateSeconds(){
+          const max = Number((document.querySelector('input[name="max_comments"]:checked')||{}).value||500);
+          return Math.min(20,Math.round(2+max*0.012));
+        }
+        let timer=null,start=0,target=0;
+        function startProgress(){
+          start=Date.now(); target=estimateSeconds();
+          let pct=5; progress.style.width=pct+'%'; etaBox.textContent=`~${target}s`;
+          timer=setInterval(()=>{
+            const elapsed=(Date.now()-start)/1000;
+            pct=Math.min(90,Math.max(pct+1,(elapsed/target)*85));
+            progress.style.width=pct.toFixed(0)+'%';
+            etaBox.textContent=`~${Math.max(1,Math.ceil(target-elapsed))}s`;
+          },180);
+        }
+
+        function lockUI() {
+          urlInput.readOnly = true;
+          urlInput.classList.add('disabled-ui');
+          recentSel.setAttribute('disabled', ''); recentSel.classList.add('disabled-ui');
+          sortSelect.setAttribute('disabled', ''); sortSelect.classList.add('disabled-ui');
+          maxRadios.forEach(r => r.setAttribute('disabled', ''));
+          maxLabels.forEach(l => l.classList.add('disabled-ui'));
+        }
+
+        function resetFormUI(){
+          urlInput.value=''; urlMsg.textContent=''; btn.disabled=true;
+          btn.classList.remove('opacity-70','cursor-not-allowed');
+          sortSelect.value='top';
+          maxRadios.forEach(r=>r.checked=(r.value===String(DEFAULT_MAX)));
+          progress.style.width='0%'; etaBox.textContent=''; spin.classList.add('hidden');
+        }
+
+        recentSel.addEventListener('change',()=>{
+          if(!recentSel.value){ resetFormUI(); return; }
+          urlInput.value=recentSel.value;
+          urlInput.dispatchEvent(new Event('input'));
+        });
+
+        if(form){
+          form.addEventListener('submit',()=>{
+            saveRecent(urlInput.value);
+            btn.disabled=true; btn.classList.add('opacity-70','cursor-not-allowed');
+            spin.classList.remove('hidden');
+            startProgress(); lockUI();
+          });
+        }
+        if(spin.dataset.active!=='1'){ spin.classList.add('hidden'); }
+
+        // restore selected max
+        const r=maxRadios.find(x=>x.value===String(DEFAULT_MAX)); if(r) r.checked=true;
+
+        // Copy TL;DR
+        const copyBtn = document.getElementById('copy-btn');
+        const copyLabel = document.getElementById('copy-label');
+        const tldrEl  = document.getElementById('tldr-text');
+        if (copyBtn && copyLabel && tldrEl) {
+          copyBtn.addEventListener('click', async () => {
+            try {
+              await navigator.clipboard.writeText(tldrEl.innerText || '');
+              const prev = copyLabel.textContent;
+              copyLabel.textContent = 'Copied!';
+              setTimeout(()=> copyLabel.textContent = prev, 1500);
+            } catch {
+              const prev = copyLabel.textContent;
+              copyLabel.textContent = 'Failed';
+              setTimeout(()=> copyLabel.textContent = prev, 1500);
+            }
           });
         }
       });
     </script>
   </head>
-  <body class="bg-gray-50 min-h-screen">
-    <div class="max-w-3xl mx-auto p-6">
-      <h1 class="text-3xl font-bold">Reddit TL;DR</h1>
-      <p class="text-gray-600 mt-2">Paste a Reddit post URL and get a clean, family-friendly TL;DR of the comments.</p>
 
-      <form id="tldr-form" method="POST" class="mt-6 space-y-4">
-        <input
-          class="w-full border rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-gray-300"
-          type="url" name="url" placeholder="https://www.reddit.com/r/.../comments/..." required />
+  <body class="min-h-screen">
+    <div id="page-bg" aria-hidden="true"></div>
 
-        <div class="grid grid-cols-2 gap-3">
-          <label class="text-sm text-gray-600">
-            Sort
-            <select name="sort" class="w-full border rounded-xl p-2">
-              <option value="top" selected>Top</option>
-              <option value="new">New</option>
-              <option value="controversial">Controversial</option>
-              <option value="best">Best</option>
-              <option value="hot">Hot</option>
-              <option value="old">Old</option>
-              <option value="q&amp;a">Q&amp;A</option>
-            </select>
-          </label>
-          <label class="text-sm text-gray-600">
-            Max comments
-            <input name="max_comments" type="number" min="50" max="2000" value="500"
-                   class="w-full border rounded-xl p-2"/>
-          </label>
-        </div>
-
-        <div class="flex items-center gap-3">
-          <button id="submit-btn" class="px-4 py-2 rounded-xl bg-black text-white">Summarize</button>
-          <div id="spinner" class="hidden flex items-center gap-2 text-gray-600">
-            <svg class="animate-spin h-5 w-5" viewBox="0 0 24 24">
-              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-              <path class="opacity-75" fill="currentColor"
-                    d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
-            </svg>
-            <span>Summarizing…</span>
+    <!-- WIDER LAYOUT -->
+    <div class="max-w-6xl mx-auto p-6 sm:p-8">
+      <!-- Header -->
+      <header class="flex items-center gap-4 justify-between">
+        <div class="flex items-center gap-4">
+          <div class="w-12 h-12 rounded-2xl bg-gradient-to-br from-[#ffb347] via-[#ff6a33] to-[#ff4500] text-white grid place-items-center text-xl shadow-lg">R</div>
+          <div>
+            <!-- Heading uses theme variables -->
+            <h1 class="text-4xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-[var(--heading-grad-from)] to-[var(--heading-grad-to)]">
+              Reddit TL;DR
+            </h1>
+            <p class="text-sm text-[color:var(--text-muted)]">Summaries of Reddit comments.</p>
           </div>
         </div>
-      </form>
+
+        <!-- Theme toggle -->
+        <button id="theme-toggle" type="button"
+          class="inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm font-semibold shadow-md transition
+                 bg-slate-900 text-white hover:bg-slate-800 ring-1 ring-slate-950/15
+                 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-200 dark:ring-white/20"
+          aria-label="Toggle dark mode">
+          <svg id="icon-moon" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z" stroke-width="1.5"/>
+          </svg>
+          <svg id="icon-sun" class="w-4 h-4 hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <circle cx="12" cy="12" r="4" stroke-width="1.5"/>
+            <path d="M12 2v2m0 16v2m10-10h-2M4 12H2m15.07 7.07l-1.41-1.41M8.34 8.34L6.93 6.93m10.14 0l-1.41 1.41M8.34 15.66l-1.41 1.41" stroke-width="1.5"/>
+          </svg>
+          <span>Theme</span>
+        </button>
+      </header>
+
+      <!-- BIG CARD -->
+      <section class="mt-8 card">
+        <div class="p-6 sm:p-10">
+          <div class="flex items-center gap-3">
+            <svg class="w-6 h-6 text-[color:var(--icon)]" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M10 14a3.5 3.5 0 0 1 0-5l2.5-2.5a3.5 3.5 0 1 1 5 5L16 12" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M14 10a3.5 3.5 0 0 1 0 5L11.5 17.5a3.5 3.5 0 1 1-5-5L8 12" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <h2 class="text-xl font-semibold text-[color:var(--text-strong)]">Analyze a post</h2>
+          </div>
+
+          <form id="tldr-form" method="POST" class="mt-6 space-y-8">
+            <!-- URL -->
+            <div>
+              <label for="url" class="text-sm text-[color:var(--text)] flex items-center gap-2">
+                <span>Post URL</span>
+              </label>
+              <div class="mt-3 flex gap-3 flex-col sm:flex-row">
+                <input
+                  id="url"
+                  class="flex-1 border rounded-2xl px-4 py-3.5 text-base bg-[var(--input-bg)] text-[color:var(--input-text)] placeholder:text-[color:var(--placeholder)] border-[color:var(--input-border)] focus:outline-none focus:ring-2 focus:ring-fuchsia-300 focus:border-fuchsia-400 shadow-sm"
+                  type="url"
+                  name="url"
+                  inputmode="url"
+                  autocomplete="off"
+                  placeholder="www.reddit.com"
+                  value="{{ current_url or '' }}"
+                  required
+                />
+                <select id="recent" class="hidden border rounded-2xl px-4 py-3.5 bg-[var(--input-bg)] min-w-[260px] text-[color:var(--input-text)] text-base border-[color:var(--input-border)]"></select>
+              </div>
+              <div id="url-msg" class="mt-2 text-xs text-[color:var(--text-muted)]"></div>
+            </div>
+
+            <!-- Controls -->
+            <div class="grid sm:grid-cols-2 gap-8">
+              <!-- Sort -->
+              <div>
+                <label class="text-sm text-[color:var(--text)] flex items-center gap-2">
+                  <svg class="w-5 h-5 text-[color:var(--icon)]" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 7h13M3 12h9M3 17h5" stroke-width="1.5" stroke-linecap="round"/></svg>
+                  <span>Sort</span>
+                </label>
+                <select name="sort" class="mt-3 w-full border rounded-2xl px-4 py-3.5 text-base bg-[var(--input-bg)] text-[color:var(--input-text)] focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 shadow-sm border-[color:var(--input-border)]">
+                  <option value="top" {% if current_sort=='top' %}selected{% endif %}>Top</option>
+                  <option value="new" {% if current_sort=='new' %}selected{% endif %}>New</option>
+                  <option value="controversial" {% if current_sort=='controversial' %}selected{% endif %}>Controversial</option>
+                  <option value="best" {% if current_sort=='best' %}selected{% endif %}>Best</option>
+                  <option value="hot" {% if current_sort=='hot' %}selected{% endif %}>Hot</option>
+                  <option value="old" {% if current_sort=='old' %}selected{% endif %}>Old</option>
+                  <option value="q&amp;a" {% if current_sort in ['q&a','qa'] %}selected{% endif %}>Q&amp;A</option>
+                </select>
+              </div>
+
+              <!-- Preset Max Comments -->
+              <div>
+                <label class="text-sm text-[color:var(--text)] flex items-center gap-2">
+                  <svg class="w-5 h-5 text-[color:var(--icon)]" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 7h12M6 12h12M6 17h12" stroke-width="1.5" stroke-linecap="round"/></svg>
+                  <span>Comment limit</span>
+                </label>
+                <div class="mt-3 grid grid-cols-5 gap-3">
+                  {% for n in [50,100,250,500,1000] %}
+                  <label class="relative cursor-pointer select-none" data-max-label>
+                    <input type="radio" name="max_comments" value="{{ n }}" class="peer sr-only"
+                           {% if (current_max_comments or 500) == n %}checked{% endif %} />
+<span class="block rounded-2xl px-4 py-3 border bg-[var(--chip-bg)] text-[color:var(--chip-text)] text-center text-base transition
+             hover:shadow-sm border-[color:var(--chip-border)]
+             peer-checked:bg-gradient-to-r peer-checked:from-[#ffb347] peer-checked:via-[#ff6a33] peer-checked:to-[#ff4500]
+             peer-checked:text-white peer-checked:border-transparent peer-checked:shadow
+             focus-within:ring-2 focus-within:ring-indigo-300">
+  {{ n }}
+</span>
+
+                  </label>
+                  {% endfor %}
+                </div>
+                <p class="text-xs text-[color:var(--text-muted)] mt-2">Higher = slower; 250–500 is a good balance.</p>
+              </div>
+            </div>
+
+            <!-- Submit -->
+            <div class="section-divider pt-6">
+              <div class="flex items-center gap-4">
+                <button id="submit-btn"
+                        class="px-6 py-3 rounded-2xl text-white text-base bg-gradient-to-r from-[#ffb347] via-[#ff6a33] to-[#ff4500] shadow-lg hover:shadow-xl hover:brightness-110 active:scale-[.98] transition disabled:opacity-70 disabled:cursor-not-allowed">
+                  Summarize
+                </button>
+
+                <!-- spinner + ETA -->
+                <div id="spinner" data-active="{% if summary or error %}1{% else %}0{% endif %}" class="hidden flex items-center gap-2 text-[color:var(--text)]">
+                  <svg class="animate-spin h-6 w-6" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+                  </svg>
+                  <span>Analyzing…</span>
+                  <span id="eta" class="text-xs text-[color:var(--text-muted)]"></span>
+                </div>
+              </div>
+
+              <div class="mt-4 w-full h-2 overflow-hidden rounded-full bg-[color:var(--track)]">
+                <div id="progress" class="h-2 w-0 bg-gradient-to-r from-[#ffb347] via-[#ff6a33] to-[#ff4500] transition-all"></div>
+              </div>
+            </div>
+          </form>
+        </div>
+      </section>
 
       {% if error %}
-        <div class="mt-6 text-red-600 whitespace-pre-wrap">{{ error }}</div>
+      <section class="mt-8 card">
+        <div class="p-6 sm:p-10">
+          <h3 class="text-sm font-semibold text-rose-600 dark:text-rose-400">Error</h3>
+          <p class="mt-2 text-[color:var(--text-danger)] whitespace-pre-wrap">{{ error }}</p>
+        </div>
+      </section>
       {% endif %}
 
-      {% if title %}
-        <div class="mt-8 bg-white border rounded-xl p-5">
-          <h2 class="text-xl font-semibold">{{ title }}</h2>
-          <p class="text-sm text-gray-500">{{ subreddit }}</p>
-          {% if selftext %}
-            <p class="mt-3 text-gray-700 whitespace-pre-wrap">{{ selftext }}</p>
-          {% endif %}
-          {% if image_url %}
-            <img class="mt-4 rounded" src="{{ image_url }}" alt="post image"/>
-          {% endif %}
-          {% if video_url %}
-            <p class="mt-4 text-sm text-gray-500">
-              Video: <a class="underline" href="{{ video_url }}" target="_blank" rel="noopener">open</a>
-            </p>
-          {% endif %}
+      {% if title or image_url or video_url %}
+      <!-- POST CARD (padding restored) -->
+      <section class="mt-8 card">
+        <div class="p-6 sm:p-10">
+          <div class="flex items-center gap-2">
+            <svg class="w-5 h-5 text-[color:var(--icon)]" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 6h16M4 12h10M4 18h7" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <h3 class="text-sm font-semibold text-[color:var(--text-strong)]">Post</h3>
+          </div>
+          <div class="mt-3">
+            {% if title %}<h2 class="text-xl font-semibold text-[color:var(--text-strong)]">{{ title }}</h2>{% endif %}
+            {% if subreddit %}<p class="text-sm text-[color:var(--text-muted)]">r/{{ subreddit }}</p>{% endif %}
+            {% if selftext %}<p class="mt-2 text-[color:var(--text)] whitespace-pre-wrap">{{ selftext }}</p>{% endif %}
+            {% if image_url %}<img class="mt-3 rounded-2xl shadow" src="{{ image_url }}" alt="post image">{% endif %}
+            {% if video_url %}
+            <p class="mt-3 text-sm text-[color:var(--text-muted)]">Video: <a class="underline" href="{{ video_url }}" target="_blank" rel="noopener">open</a></p>
+            {% endif %}
+          </div>
         </div>
+      </section>
       {% endif %}
 
       {% if sentiment %}
-        {% set pos = (sentiment.get('pos', 0) | float) %}
-        {% set neu = (sentiment.get('neu', 0) | float) %}
-        {% set neg = (sentiment.get('neg', 0) | float) %}
-        <div class="mt-5 bg-white border rounded-xl p-5">
-          <h3 class="text-sm font-semibold text-gray-700">Comment Sentiment</h3>
-          <div class="mt-2 space-y-2">
+      <!-- SENTIMENT CARD (padding restored) -->
+      <section class="mt-8 card">
+        <div class="p-6 sm:p-10">
+          <div class="flex items-center gap-3 mb-3">
+            <h2 class="text-2xl font-bold text-[color:var(--text-strong)]">Comment sentiment</h2>
+            <span class="text-2xl">😊</span>
+          </div>
+          {% set pos = (sentiment.get('pos', 0) | float) %}
+          {% set neu = (sentiment.get('neu', 0) | float) %}
+          {% set neg = (sentiment.get('neg', 0) | float) %}
+          <div class="mt-2 space-y-4">
             <div>
-              <div class="flex justify-between text-xs text-gray-500">
-                <span>Positive</span><span>{{ pos | round(1) }}%</span>
+              <div class="flex justify-between text-sm text-[color:var(--text)]">
+                <span>🙂 Positive</span><span>{{ pos | round(1) }}%</span>
               </div>
-              <div class="w-full bg-gray-200 rounded h-2">
-                <div class="h-2 rounded bg-green-500" style="width: {{ pos | round(3) }}%;"></div>
+              <div class="w-full h-3 rounded-full bg-[color:var(--track)]">
+                <div class="h-3 rounded-full bg-emerald-500" style="width: {{ pos | round(3) }}%;"></div>
               </div>
             </div>
             <div>
-              <div class="flex justify-between text-xs text-gray-500">
-                <span>Neutral</span><span>{{ neu | round(1) }}%</span>
+              <div class="flex justify-between text-sm text-[color:var(--text)]">
+                <span>😐 Neutral</span><span>{{ neu | round(1) }}%</span>
               </div>
-              <div class="w-full bg-gray-200 rounded h-2">
-                <div class="h-2 rounded bg-gray-500" style="width: {{ neu | round(3) }}%;"></div>
+              <div class="w-full h-3 rounded-full bg-[color:var(--track)]">
+                <div class="h-3 rounded-full bg-slate-500" style="width: {{ neu | round(3) }}%;"></div>
               </div>
             </div>
             <div>
-              <div class="flex justify-between text-xs text-gray-500">
-                <span>Negative</span><span>{{ neg | round(1) }}%</span>
+              <div class="flex justify-between text-sm text-[color:var(--text)]">
+                <span>🙁 Negative</span><span>{{ neg | round(1) }}%</span>
               </div>
-              <div class="w-full bg-gray-200 rounded h-2">
-                <div class="h-2 rounded bg-red-500" style="width: {{ neg | round(3) }}%;"></div>
+              <div class="w-full h-3 rounded-full bg-[color:var(--track)]">
+                <div class="h-3 rounded-full bg-rose-500" style="width: {{ neg | round(3) }}%;"></div>
               </div>
             </div>
           </div>
         </div>
+      </section>
       {% endif %}
 
       {% if summary %}
-        <div class="mt-6 bg-white border rounded-xl p-5">
-          <h3 class="text-lg font-semibold">TL;DR</h3>
-          <div class="mt-2 whitespace-pre-wrap">{{ summary }}</div>
+      <!-- TL;DR CARD (padding restored) -->
+      <section class="mt-8 card">
+        <div class="p-6 sm:p-10">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-3">
+              <h2 class="text-2xl font-bold text-[color:var(--text-strong)]">TL;DR</h2>
+            </div>
+          </div>
+          <p id="tldr-text" class="mt-4 text-[color:var(--text)] whitespace-pre-wrap">{{ summary }}</p>
         </div>
+      </section>
       {% endif %}
     </div>
   </body>

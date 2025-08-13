@@ -33,6 +33,7 @@ if not OPENROUTER_API_KEY:
 llm = OpenAI(base_url=OPENROUTER_BASE, api_key=OPENROUTER_API_KEY)
 
 app = Flask(__name__, template_folder=str(Path(__file__).with_name("templates")))
+
 # ---------- Rate limiting ----------
 # Default: 20 requests/min per client IP across all routes
 limiter = Limiter(
@@ -43,7 +44,8 @@ limiter = Limiter(
 
 # ---------- Simple in-memory cache (30 min TTL) ----------
 _CACHE_TTL_SECS = 30 * 60
-_CACHE: dict[str, tuple[float, dict, str]] = {}  # key -> (ts, data, summary)
+# key -> (ts, data, summary)
+_CACHE: dict[str, tuple[float, dict, str]] = {}
 
 def _cache_key(url: str, sort: str, max_comments: int, model: str) -> str:
     return f"{model}|{sort}|{max_comments}|{url}"
@@ -68,13 +70,29 @@ def _set_cache(key: str, data: dict, summary: str):
                 break
             _CACHE.pop(k, None)
 
+# ---------- Input guardrails ----------
+_ALLOWED_SORTS = {"top", "new", "controversial", "best", "hot", "old", "q&a", "qa"}
+_MIN_COMMENTS = 50
+_MAX_COMMENTS = 1200
+
+def _clamp_comments(n: int) -> int:
+    if n < _MIN_COMMENTS: return _MIN_COMMENTS
+    if n > _MAX_COMMENTS: return _MAX_COMMENTS
+    return n
+
+def _validate_sort(sort: str) -> str:
+    s = (sort or "top").strip().lower()
+    if s not in _ALLOWED_SORTS:
+        raise ValueError(f"Invalid sort '{sort}'. Allowed: {', '.join(sorted(_ALLOWED_SORTS))}.")
+    return s
+
 # ---------- URL handling ----------
 def normalize_reddit_url(raw: str) -> str:
     """
-    Accepts reddit.com / old.reddit.com / m.reddit.com / np.reddit.com / redd.it links.
-    Normalizes to https://www.reddit.com/<path> (strips query/fragment).
-    Leaves redd.it shortlinks as-is (PRAW can resolve).
-    Raises ValueError for non-Reddit URLs or obviously invalid forms.
+    Accept only reddit.com (and subdomains) or redd.it links.
+    For reddit.com variants, require a post path containing /comments/.
+    For redd.it shortlinks, pass-through (PRAW resolves to a post).
+    Normalize to https scheme and strip query/fragment.
     """
     if not raw:
         raise ValueError("Please paste a Reddit post URL.")
@@ -87,7 +105,6 @@ def normalize_reddit_url(raw: str) -> str:
     u = urlparse(raw)
     host = (u.netloc or "").lower()
 
-    # Accept hosts
     valid_hosts = (
         "reddit.com",
         "www.reddit.com",
@@ -102,21 +119,25 @@ def normalize_reddit_url(raw: str) -> str:
     if not any(host == h or host.endswith("." + h) for h in valid_hosts):
         raise ValueError("That doesn't look like a Reddit URL.")
 
-    # If redd.it shortlink, pass through (can't normalize path easily here)
+    # redd.it shortlinks are OK
     if "redd.it" in host:
         return urlunparse(("https", host, u.path, "", "", ""))
 
-    # For reddit.com variants, normalize host and strip query/fragment
+    # For reddit.com variants, must be a comments permalink
     path = u.path or "/"
-    # Ensure it's a post (has /comments/); if not, still let PRAW try, but annotate
     if "/comments/" not in path:
-        # Often users paste a subreddit or user URL; give a clear hint
-        # but still let PRAW attempt (may handle gallery or crosspost).
-        pass
+        raise ValueError("Please paste a direct post link that contains /comments/ (or use a redd.it shortlink).")
 
     return urlunparse(("https", "www.reddit.com", path, "", "", ""))
 
-# -------- LLM helpers (TL;DR-only) --------
+# -------- LLM helpers (low volatility) --------
+_SYSTEM_STYLE = (
+    "You write single-paragraph, family-friendly TL;DRs.\n"
+    "Summarize Reddit COMMENTS only. Keep it 3–6 sentences.\n"
+    "Include overall sentiment and main viewpoints. Paraphrase any profanity.\n"
+    "No lists or headings. Keep tone neutral and concise."
+)
+
 def _call_llm_with_retry(messages, attempts: int = 3, timeout: int = 60):
     last = None
     headers = {}
@@ -130,51 +151,84 @@ def _call_llm_with_retry(messages, attempts: int = 3, timeout: int = 60):
             r = llm.chat.completions.create(
                 model=OPENROUTER_MODEL,
                 messages=messages,
+                temperature=0,
+                top_p=0.1,
+                frequency_penalty=0.0,
+                presence_penalty=0.0,
+                extra_body={"seed": 42},  # some models honor this; harmless if ignored
                 extra_headers=headers or None,
                 timeout=timeout,
             )
             return r
         except Exception as e:
             last = e
-            # Expose timeout hint in error flow
+            # brief backoff then retry
+            sleep_s = 0.6 * (i + 1)
             if "timeout" in str(e).lower() or "timed out" in str(e).lower():
-                # brief backoff then retry
-                time.sleep(0.8 * (i + 1))
-            else:
-                time.sleep(0.6 * (i + 1))
+                sleep_s = 0.8 * (i + 1)
+            time.sleep(sleep_s)
     raise last
 
 def summarize_with_openrouter(paragraph: str) -> str:
-    # TL;DR ONLY — no lists, no extras
-    prompt = (
-        "You are summarizing the COMMENTS under a Reddit post.\n"
-        "Return ONLY a single TL;DR paragraph (about 3–6 sentences) covering overall sentiment, "
-        "major viewpoints, and key takeaways. Do NOT include bullet points or numbered lists. "
-        "STYLE: clean, concise, family-friendly. You MAY consider profane/toxic comments for analysis, "
-        "but DO NOT reproduce profanity or slurs; paraphrase euphemistically.\n\n"
-        + paragraph
+    r = _call_llm_with_retry(
+        [
+            {"role": "system", "content": _SYSTEM_STYLE},
+            {"role": "user", "content": paragraph},
+        ],
+        timeout=75,
     )
-    r = _call_llm_with_retry([{"role": "user", "content": prompt}], timeout=75)
-    return r.choices[0].message.content.strip()
+    return (r.choices[0].message.content or "").strip()
 
 def _summarize_chunk(text: str) -> str:
-    # Chunk TL;DR used in map step
-    prompt = (
-        "Summarize THIS CHUNK of Reddit COMMENTS as a single concise TL;DR paragraph "
-        "(2–4 sentences). No lists. Family-friendly; paraphrase any profanities.\n\n" + text
+    r = _call_llm_with_retry(
+        [
+            {"role": "system", "content": _SYSTEM_STYLE},
+            {"role": "user", "content": f"Chunk:\n\n{text}"},
+        ],
+        timeout=60,
     )
-    r = _call_llm_with_retry([{"role": "user", "content": prompt}], timeout=60)
-    return r.choices[0].message.content.strip()
+    return (r.choices[0].message.content or "").strip()
 
-def summarize_map_reduce(paragraph: str, *, chunk_chars: int = 6000) -> str:
-    # Split paragraph into near-sentence chunks
-    parts, cur, total = [], [], 0
-    for sent in paragraph.split(". "):
-        s = (sent + ". ").strip()
-        if total + len(s) > chunk_chars and cur:
-            parts.append("".join(cur)); cur, total = [], 0
-        cur.append(s); total += len(s)
-    if cur: parts.append("".join(cur))
+# ---- smarter, sentence-aware chunking ----
+def _split_sentences(text: str) -> list[str]:
+    """
+    Best-effort sentence splitter without heavy deps.
+    Falls back to naive '.' split; keeps punctuation.
+    """
+    import re
+    protected = re.sub(
+        r"\b(e\.g|i\.e|mr|mrs|dr|ms|jr|sr|u\.s|u\.k|etc)\.",
+        lambda m: m.group(0).replace(".", "§"),
+        text,
+        flags=re.I,
+    )
+    parts = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9\"'])", protected)
+    sents = []
+    for p in parts:
+        s = p.replace("§", ".").strip()
+        if s:
+            if s[-1] not in ".!?":
+                s += "."
+            sents.append(s)
+    if not sents:
+        sents = [s.strip() + "." for s in text.split(".") if s.strip()]
+    return sents
+
+def _chunk_by_chars(sents: list[str], chunk_chars: int = 3000) -> list[str]:
+    chunks, cur, n = [], [], 0
+    for s in sents:
+        if n + len(s) + 1 > chunk_chars and cur:
+            chunks.append(" ".join(cur))
+            cur, n = [], 0
+        cur.append(s)
+        n += len(s) + 1
+    if cur:
+        chunks.append(" ".join(cur))
+    return chunks
+
+def summarize_map_reduce(paragraph: str, *, chunk_chars: int = 3000) -> str:
+    sents = _split_sentences(paragraph)
+    parts = _chunk_by_chars(sents, chunk_chars=chunk_chars)
 
     if len(parts) <= 1:
         return summarize_with_openrouter(paragraph)
@@ -185,15 +239,8 @@ def summarize_map_reduce(paragraph: str, *, chunk_chars: int = 6000) -> str:
         mini.append(_summarize_chunk(p))
 
     # REDUCE: combine mini TL;DRs into ONE final TL;DR paragraph
-    reduce_prompt = (
-        "Combine the following chunk TL;DRs into ONLY one final TL;DR paragraph "
-        "(about 4–7 sentences) that captures the overall sentiment, main positions, "
-        "and key takeaways from the comments. Do NOT include bullets or lists. "
-        "Family-friendly; do not reproduce profanity—paraphrase euphemistically.\n\n"
-        + "\n\n".join(mini)
-    )
-    r = _call_llm_with_retry([{"role": "user", "content": reduce_prompt}], timeout=75)
-    return r.choices[0].message.content.strip()
+    reduce_text = " ".join(mini)
+    return summarize_with_openrouter(reduce_text)
 
 # -------- Routes --------
 @app.get("/health")
@@ -202,7 +249,10 @@ def health():
     try:
         r = llm.chat.completions.create(
             model=OPENROUTER_MODEL,
-            messages=[{"role": "user", "content": "ping"}],
+            messages=[{"role": "system", "content": "ping"}],
+            temperature=0,
+            top_p=0.1,
+            extra_body={"seed": 42},
         )
         ok = bool(r.choices[0].message.content)
         return jsonify({"llm_ok": ok, "model": OPENROUTER_MODEL}), 200
@@ -210,7 +260,7 @@ def health():
         return jsonify({"llm_ok": False, "error": str(e)}), 500
 
 @app.route("/", methods=["GET", "POST"])
-@limiter.limit("5 per minute")   # tighter cap on the expensive summarize endpoint
+@limiter.limit("20 per minute")   # tighter cap on the expensive summarize endpoint
 def index():
     # Verify Reddit creds; show clear message if 401/mismatch/etc.
     try:
@@ -235,12 +285,18 @@ def index():
     error = None
 
     if request.method == "POST":
-        sort = (request.form.get("sort") or "top").strip().lower()
+        # Guardrails
+        try:
+            sort = _validate_sort(request.form.get("sort"))
+        except ValueError as ve:
+            return render_template("index.html", summary=None, error=str(ve))
+
         raw_url = (request.form.get("url") or "").strip()
         try:
             max_comments = int(request.form.get("max_comments") or 500)
         except ValueError:
             max_comments = 500
+        max_comments = _clamp_comments(max_comments)
 
         # Robust URL handling + caching + timeout safeguards
         try:
@@ -276,6 +332,8 @@ def index():
 
             _set_cache(cache_key, data, summary)
 
+    current_url = url if request.method == "POST" else None
+
     payload = {
         "summary": summary,
         "error": error,
@@ -287,6 +345,7 @@ def index():
         "sentiment": data.get("sentiment") if data else None,
         "current_sort": sort,
         "current_max_comments": max_comments,
+        "current_url": current_url,
     }
     return render_template("index.html", **payload)
 

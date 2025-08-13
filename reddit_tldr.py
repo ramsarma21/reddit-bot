@@ -56,7 +56,7 @@ def fetch_submission_data(url: str, *, sort: str = "top", max_comments: int = 50
         title, subreddit, selftext, paragraph, image_url, video_url, sentiment
       }
     """
-    if not url or "reddit.com" not in url:
+    if not url or ("reddit.com" not in url and "redd.it" not in url):
         raise ValueError("Please provide a valid Reddit post URL.")
 
     submission = reddit.submission(url=url)
@@ -65,12 +65,17 @@ def fetch_submission_data(url: str, *, sort: str = "top", max_comments: int = 50
     submission.comments.replace_more(limit=0)
 
     comments: List[str] = []
+    kept: List[str] = []
     for c in submission.comments.list():
         try:
             if hasattr(c, "body") and _filter_comment(c.body, getattr(c, "author", None)):
-                comments.append(c.body.strip())
-                if len(comments) >= max_comments:
-                    break
+                text = c.body.strip()
+                # de-dup near-duplicates to cut boilerplate ("me too", copypasta)
+                if not _too_similar(text, kept):
+                    kept.append(text)
+                    comments.append(text)
+                    if len(comments) >= max_comments:
+                        break
         except Exception:
             continue
 
@@ -119,39 +124,96 @@ def _extract_media(submission) -> Tuple[str | None, str | None]:
     return image_url, video_url
 
 
+# -------- Comment Filtering 2.0 --------
+_BOT_MARKERS = (
+    "i am a bot",
+    "automoderator",
+    "this action was performed automatically",
+)
+_URL_RE = re.compile(r"(https?://\S+)")
+_MIN_LEN = 12
+# if comment is mostly URL gibberish, drop it
+def _mostly_linky(text: str) -> bool:
+    nonspace = len(re.sub(r"\s+", "", text))
+    links = _URL_RE.findall(text)
+    link_len = sum(len(L) for L in links)
+    return bool(links) and (link_len / max(1, nonspace) > 0.6)
+
 def _filter_comment(body: str, author) -> bool:
-    """
-    Keep deleted/removed/very-short/bot/link-only/mod comments out.
-    Profanity is allowed here (LLM prompt sanitizes final output).
-    """
-    if not body:
+    """Return True if this comment should be kept, False if it should be excluded."""
+    if not body or len(body.strip()) < 3:
         return False
-    text = body.strip()
-    if not text or len(text) <= 10:
+
+    lower_body = body.lower().strip()
+
+    # Skip deleted/removed/moderator/bot comments
+    if lower_body in ("[deleted]", "[removed]"):
         return False
-    low = text.lower()
-    if low in ("[deleted]", "[removed]"):
+    if author and hasattr(author, "name") and author.name and "bot" in author.name.lower():
         return False
-    if "i am a bot" in low:
+    if "moderator" in lower_body:
         return False
-    if ("http://" in low or "https://" in low) and len(low.replace("http://", "").replace("https://", "")) < 40:
+
+    # Skip if comment contains any URL
+    if "http://" in lower_body or "https://" in lower_body or "www." in lower_body:
         return False
-    try:
-        if author is not None and getattr(author, "is_mod", False):
-            return False
-    except Exception:
-        pass
+
+    # Skip if it's just a link or ad
+    if len(lower_body.split()) <= 3 and ("http" in lower_body or "www." in lower_body):
+        return False
+
     return True
 
 
+    # Author checks
+    try:
+        if author is not None:
+            name = str(getattr(author, "name", "") or "").lower()
+            if name == "automoderator":
+                return False
+            if getattr(author, "is_mod", False):
+                return False
+    except Exception:
+        pass
+
+    # Drop URL-only or mostly-URL blurbs
+    if _mostly_linky(text):
+        return False
+
+    # Drop trivial link-only lines
+    if _URL_RE.fullmatch(text.strip()):
+        return False
+
+    return True
+
+# Jaccard similarity de-dup to cut near-duplicates
+def _too_similar(text: str, kept: List[str], threshold: float = 0.85) -> bool:
+    import re
+    tokens_a = set(re.findall(r"[a-zA-Z0-9']+", text.lower()))
+    if not tokens_a:
+        return False
+    for k in kept[-60:]:  # only compare to recent to keep it cheap
+        tokens_b = set(re.findall(r"[a-zA-Z0-9']+", k.lower()))
+        if not tokens_b:
+            continue
+        inter = len(tokens_a & tokens_b)
+        union = len(tokens_a | tokens_b)
+        if union and (inter / union) >= threshold:
+            return True
+    return False
+
 def _make_paragraph(comments: List[str], sentence_limit: int = 70) -> str:
-    """Original style: split by '.', restore '. ', take first N sentences; cap for token safety."""
+    """
+    Normalize whitespace, split on sentence-ish boundaries, restore punctuation,
+    cap by sentence and length to keep LLM prompt efficient.
+    """
     text = " ".join(comments).replace("\n", " ").strip('"')
     text = re.sub(r"\s+", " ", text).strip()
-    sentences = [s.strip() for s in text.split(".") if s.strip()]
-    sentences = [s + ". " for s in sentences]
-    return "".join(sentences[:sentence_limit])[:20000]
 
+    # simple sentence split that keeps punctuation
+    parts = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9\"'])", text)
+    sentences = [s.strip() if s.endswith(('.', '!', '?')) else (s.strip() + ".") for s in parts if s.strip()]
+    return "".join((s + " ") for s in sentences[:sentence_limit])[:20000].strip()
 
 def _sentiment_split(comments: List[str]) -> dict:
     """Return percentage split of positive/neutral/negative using VADER."""

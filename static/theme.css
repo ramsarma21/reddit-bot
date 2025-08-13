@@ -1,0 +1,182 @@
+/* Light tokens */
+:root{
+    --page-gradient: linear-gradient(180deg,#f8fafc 0%,#eef2ff 40%,#f5f3ff 100%);
+    --grid-dot: rgba(17,24,39,.06);
+  
+    --text-strong: #0f172a;     /* slate-900 */
+    --text:        #334155;     /* slate-700 */
+    --text-muted:  #64748b;     /* slate-500 */
+    --text-danger: #e11d48;     /* rose-600 */
+  
+    --heading-grad-from: #0f172a; /* slate-900 */
+    --heading-grad-to:   #334155; /* slate-700 */
+  
+    --card-bg: rgba(255,255,255,.70);
+    --ring: rgba(0,0,0,.05);
+    --hover-bg: rgba(0,0,0,.05);
+  
+    --input-bg: rgba(255,255,255,.90);
+    --input-text: #0f172a;
+    --placeholder: #94a3b8;   /* slate-400 */
+    --input-border: #e2e8f0;  /* slate-200 */
+  
+    --chip-bg: rgba(255,255,255,.90);
+    --chip-text: #0f172a;
+    --chip-border: #e2e8f0;
+  
+    --track: rgba(148,163,184,.35); /* slate-400/35 */
+  
+    --icon: #334155;
+    --divider: rgba(0,0,0,.06);
+  }
+  
+  /* Dark tokens */
+  .dark{
+    --page-gradient: linear-gradient(180deg,#0b1220 0%,#0b1324 40%,#0e1222 100%);
+    --grid-dot: rgba(255,255,255,.05);
+  
+    --text-strong: #e2e8f0;     /* slate-200 */
+    --text:        #cbd5e1;     /* slate-300 */
+    --text-muted:  #94a3b8;     /* slate-400 */
+    --text-danger: #fb7185;     /* rose-400 */
+  
+    --heading-grad-from: #e2e8f0; /* slate-200 */
+    --heading-grad-to:   #cbd5e1; /* slate-300 */
+  
+    --card-bg: rgba(15,23,42,.70);  /* slate-900/70 */
+    --ring: rgba(255,255,255,.10);
+    --hover-bg: rgba(255,255,255,.05);
+  
+    --input-bg: rgba(15,23,42,.80); /* slate-900/80 */
+    --input-text: #e2e8f0;
+    --placeholder: #94a3b8;
+    --input-border: rgba(255,255,255,.10);
+  
+    --chip-bg: rgba(15,23,42,.80);
+    --chip-text: #e2e8f0;
+    --chip-border: rgba(255,255,255,.10);
+  
+    --track: rgba(255,255,255,.10);
+  
+    --icon: #cbd5e1;
+    --divider: rgba(255,255,255,.08);
+  }
+  
+  /* Component helpers (no Tailwind build needed) */
+  .card{
+    border-radius: 28px;
+    background: var(--card-bg);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    box-shadow: 0 25px 50px -12px rgba(0,0,0,.25);
+    border: 1px solid var(--ring);
+  }
+
+/* Light mode → dark toggle (when <html> does NOT have .dark) */
+:not(.dark) #theme-toggle {
+    background-color: #1a1a1a;  /* dark button */
+    color: #ffffff;             /* light text/icon */
+  }
+  
+  /* Dark mode → light toggle (when <html> HAS .dark) */
+  .dark #theme-toggle {
+    background-color: #ffffff;  /* light button */
+    color: #1a1a1a;             /* dark text/icon */
+  }
+
+  /* ================================
+   Smooth whole-page theme animation
+   (ADD-ONLY: does not change colors)
+   ================================ */
+
+/* A. Fade most color-like properties across the page */
+:where(html) * {
+    transition:
+      background-color .45s ease,
+      color .45s ease,
+      border-color .45s ease,
+      fill .45s ease,
+      stroke .45s ease,
+      box-shadow .45s ease,
+      outline-color .45s ease,
+      text-decoration-color .45s ease;
+  }
+  
+  /* B. Give cards a slightly richer transition */
+  .card{
+    transition:
+      background-color .45s ease,
+      border-color .45s ease,
+      box-shadow .45s ease;
+  }
+  
+  /* C. Cross-fade the gradient + dot background
+        (background-image isn't animatable, so we fade layers) */
+  #page-bg{
+    position: fixed;
+    inset: 0;
+    z-index: -1;              /* always behind content */
+    pointer-events: none;
+    /* keep a baseline using your tokens (still updates instantly) */
+    background-image:
+      radial-gradient(var(--grid-dot) 1px, transparent 1px),
+      var(--page-gradient);
+    background-size: 12px 12px, auto;
+  }
+  
+  /* Two overlaid layers we can fade between */
+  #page-bg::before,
+  #page-bg::after{
+    content: "";
+    position: absolute; inset: 0;
+    background-size: 12px 12px, auto;
+    transition: opacity .55s cubic-bezier(.22,.61,.36,1);
+  }
+  
+  /* Light design layer (matches your :root tokens) */
+  #page-bg::before{
+    background-image:
+      radial-gradient(rgba(17,24,39,.06) 1px, transparent 1px),
+      linear-gradient(180deg,#f8fafc 0%,#eef2ff 40%,#f5f3ff 100%);
+    opacity: 1; /* visible by default */
+  }
+  
+  /* Dark design layer (matches your .dark tokens) */
+  #page-bg::after{
+    background-image:
+      radial-gradient(rgba(255,255,255,.05) 1px, transparent 1px),
+      linear-gradient(180deg,#0b1220 0%,#0b1324 40%,#0e1222 100%);
+    opacity: 0; /* hidden by default */
+  }
+  
+  /* Toggle the layer opacities when .dark is on <html> */
+  .dark #page-bg::before{ opacity: 0; }
+  .dark #page-bg::after { opacity: 1; }
+  
+  /* D. Make the theme toggle itself feel silky (optional, small) */
+  #theme-toggle{
+    transition:
+      background-color .45s ease,
+      color .45s ease,
+      box-shadow .45s ease,
+      transform .18s ease;
+  }
+  #theme-toggle:hover{
+    transform: translateY(-1px);
+    box-shadow: 0 10px 28px rgba(2,6,23,.16);
+  }
+  .dark #theme-toggle:hover{
+    box-shadow: 0 10px 28px rgba(0,0,0,.26);
+  }
+  
+  /* E. Respect reduced motion */
+  @media (prefers-reduced-motion: reduce){
+    :where(html) *{
+      transition: none !important;
+    }
+    #page-bg::before, #page-bg::after{
+      transition: none !important;
+    }
+  }
+  
+  
