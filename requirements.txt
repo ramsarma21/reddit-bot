@@ -1,0 +1,7 @@
+flask==3.0.3
+praw==7.8.1
+python-dotenv==1.0.1
+openai==1.53.0
+httpx==0.27.2
+flask-limiter==3.8.0
+vaderSentiment==3.3.2

@@ -1,52 +1,132 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <!-- Required meta tags -->
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
-
-    <!-- Bootstrap CSS -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.4.1/dist/css/bootstrap.min.css" integrity="sha384-Vkoo8x4CGsO3+Hhxv8T/Q5PaXtkKtu6ug5TOeNV6gBiFeWPGFN9MuhOf23Q9Ifjh" crossorigin="anonymous">
-
-    <head>
+    <meta charset="utf-8"/>
     <title>Reddit TL;DR</title>
-</head>
-<body>
-    <h1>Reddit TL;DR Bot</h1>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      // Simple progress indicator: show spinner & disable button on submit
+      document.addEventListener('DOMContentLoaded', () => {
+        const form = document.getElementById('tldr-form');
+        const btn  = document.getElementById('submit-btn');
+        const spin = document.getElementById('spinner');
 
-    <form method="post">
-        <input type="text" name="url" size="80" placeholder="Paste Reddit post URL here" required>
-        <button type="submit">Summarize</button>
-    </form>
+        if (form) {
+          form.addEventListener('submit', () => {
+            if (btn) { btn.disabled = true; btn.classList.add('opacity-70', 'cursor-not-allowed'); }
+            if (spin) { spin.classList.remove('hidden'); }
+          });
+        }
+      });
+    </script>
+  </head>
+  <body class="bg-gray-50 min-h-screen">
+    <div class="max-w-3xl mx-auto p-6">
+      <h1 class="text-3xl font-bold">Reddit TL;DR</h1>
+      <p class="text-gray-600 mt-2">Paste a Reddit post URL and get a clean, family-friendly TL;DR of the comments.</p>
 
-    {% if error %}
-        <p style="color:red;">Error: {{ error }}</p>
-    {% endif %}
+      <form id="tldr-form" method="POST" class="mt-6 space-y-4">
+        <input
+          class="w-full border rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-gray-300"
+          type="url" name="url" placeholder="https://www.reddit.com/r/.../comments/..." required />
 
-    {% if title %}
-        <h2><strong>Title: </strong>{{ title }}</h2>
-        <p><strong>Subreddit:</strong> {{ subreddit }}</p>
-        {% if selftext %}
-            <p><strong>Post Text:</strong> {{ selftext }}</p>
-        {% endif %}
-    {% endif %}
+        <div class="grid grid-cols-2 gap-3">
+          <label class="text-sm text-gray-600">
+            Sort
+            <select name="sort" class="w-full border rounded-xl p-2">
+              <option value="top" selected>Top</option>
+              <option value="new">New</option>
+              <option value="controversial">Controversial</option>
+              <option value="best">Best</option>
+              <option value="hot">Hot</option>
+              <option value="old">Old</option>
+              <option value="q&amp;a">Q&amp;A</option>
+            </select>
+          </label>
+          <label class="text-sm text-gray-600">
+            Max comments
+            <input name="max_comments" type="number" min="50" max="2000" value="500"
+                   class="w-full border rounded-xl p-2"/>
+          </label>
+        </div>
 
-    {% if image_url %}
-        <h3>Image:</h3>
-        <img src="{{ image_url }}" width="500">
-    {% endif %}
+        <div class="flex items-center gap-3">
+          <button id="submit-btn" class="px-4 py-2 rounded-xl bg-black text-white">Summarize</button>
+          <div id="spinner" class="hidden flex items-center gap-2 text-gray-600">
+            <svg class="animate-spin h-5 w-5" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor"
+                    d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+            </svg>
+            <span>Summarizing…</span>
+          </div>
+        </div>
+      </form>
 
-    {% if video_url %}
-        <h3>Video:</h3>
-        <video width="500" controls>
-            <source src="{{ video_url }}" type="video/mp4">
-            Your browser does not support the video tag.
-        </video>
-    {% endif %}
+      {% if error %}
+        <div class="mt-6 text-red-600 whitespace-pre-wrap">{{ error }}</div>
+      {% endif %}
 
-    {% if summary %}
-        <h2>TL;DR</h2>
-        <pre>{{ summary }}</pre>
-    {% endif %}
-</body>
+      {% if title %}
+        <div class="mt-8 bg-white border rounded-xl p-5">
+          <h2 class="text-xl font-semibold">{{ title }}</h2>
+          <p class="text-sm text-gray-500">{{ subreddit }}</p>
+          {% if selftext %}
+            <p class="mt-3 text-gray-700 whitespace-pre-wrap">{{ selftext }}</p>
+          {% endif %}
+          {% if image_url %}
+            <img class="mt-4 rounded" src="{{ image_url }}" alt="post image"/>
+          {% endif %}
+          {% if video_url %}
+            <p class="mt-4 text-sm text-gray-500">
+              Video: <a class="underline" href="{{ video_url }}" target="_blank" rel="noopener">open</a>
+            </p>
+          {% endif %}
+        </div>
+      {% endif %}
+
+      {% if sentiment %}
+        {% set pos = (sentiment.get('pos', 0) | float) %}
+        {% set neu = (sentiment.get('neu', 0) | float) %}
+        {% set neg = (sentiment.get('neg', 0) | float) %}
+        <div class="mt-5 bg-white border rounded-xl p-5">
+          <h3 class="text-sm font-semibold text-gray-700">Comment Sentiment</h3>
+          <div class="mt-2 space-y-2">
+            <div>
+              <div class="flex justify-between text-xs text-gray-500">
+                <span>Positive</span><span>{{ pos | round(1) }}%</span>
+              </div>
+              <div class="w-full bg-gray-200 rounded h-2">
+                <div class="h-2 rounded bg-green-500" style="width: {{ pos | round(3) }}%;"></div>
+              </div>
+            </div>
+            <div>
+              <div class="flex justify-between text-xs text-gray-500">
+                <span>Neutral</span><span>{{ neu | round(1) }}%</span>
+              </div>
+              <div class="w-full bg-gray-200 rounded h-2">
+                <div class="h-2 rounded bg-gray-500" style="width: {{ neu | round(3) }}%;"></div>
+              </div>
+            </div>
+            <div>
+              <div class="flex justify-between text-xs text-gray-500">
+                <span>Negative</span><span>{{ neg | round(1) }}%</span>
+              </div>
+              <div class="w-full bg-gray-200 rounded h-2">
+                <div class="h-2 rounded bg-red-500" style="width: {{ neg | round(3) }}%;"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      {% endif %}
+
+      {% if summary %}
+        <div class="mt-6 bg-white border rounded-xl p-5">
+          <h3 class="text-lg font-semibold">TL;DR</h3>
+          <div class="mt-2 whitespace-pre-wrap">{{ summary }}</div>
+        </div>
+      {% endif %}
+    </div>
+  </body>
 </html>
