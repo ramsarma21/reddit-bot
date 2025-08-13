@@ -32,8 +32,7 @@ if not OPENROUTER_API_KEY:
 # Init client
 llm = OpenAI(base_url=OPENROUTER_BASE, api_key=OPENROUTER_API_KEY)
 
-app = Flask(__name__)
-
+app = Flask(__name__, template_folder=str(Path(__file__).with_name("templates")))
 # ---------- Rate limiting ----------
 # Default: 20 requests/min per client IP across all routes
 limiter = Limiter(
