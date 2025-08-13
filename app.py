@@ -1,5 +1,8 @@
 import os
 import time
+import re
+import urllib.parse
+import requests
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
@@ -87,12 +90,54 @@ def _validate_sort(sort: str) -> str:
     return s
 
 # ---------- URL handling ----------
+
+# Accept reddit app short path: .../s/<token> (must be at the end of the path)
+S_PATH_RE = re.compile(r"/s/[A-Za-z0-9]+/?$", re.IGNORECASE)
+
+def resolve_reddit_s_short(url: str, timeout: int = 7) -> str:
+    """
+    Follows redirects for reddit.com .../s/<token> short links and returns
+    the final canonical reddit URL (usually /comments/<id>/...).
+    Returns the input URL on any failure.
+    """
+    try:
+        # Ensure scheme
+        if not re.match(r"^\w+://", url):
+            url = "https://" + url
+
+        u = urllib.parse.urlparse(url)
+        if "reddit.com" not in u.netloc.lower() or not S_PATH_RE.search(u.path):
+            return url  # not an /s/ link; leave unchanged
+
+        headers = {
+            "User-Agent": os.getenv("REDDIT_USER_AGENT", "reddit-tldr-bot (resolve s-link)")
+        }
+
+        # Try HEAD first (cheap)
+        r = requests.head(url, allow_redirects=True, timeout=timeout, headers=headers)
+        final_url = r.url
+
+        # Fall back to GET if HEAD isn't allowed / didn't redirect
+        if (final_url == url) or (r.status_code in (405, 403)) or S_PATH_RE.search(urllib.parse.urlparse(final_url).path or ""):
+            g = requests.get(url, allow_redirects=True, timeout=timeout, headers=headers)
+            final_url = g.url
+
+        # Normalize host and strip query/fragment
+        uu = urllib.parse.urlparse(final_url)
+        path_only = uu.path or "/"
+        if "redd.it" in uu.netloc.lower():
+            return f"https://{uu.netloc}{path_only}"
+        return f"https://www.reddit.com{path_only}"
+    except Exception:
+        return url
+
 def normalize_reddit_url(raw: str) -> str:
     """
-    Accept only reddit.com (and subdomains) or redd.it links.
-    For reddit.com variants, require a post path containing /comments/.
-    For redd.it shortlinks, pass-through (PRAW resolves to a post).
-    Normalize to https scheme and strip query/fragment.
+    Accept reddit.com (and subdomains), redd.it, and reddit app short-path links:
+      - reddit.com ... /comments/...   -> normalize to https://www.reddit.com/<path>
+      - reddit.com ... /s/<token>      -> allowed; will be resolved to /comments/... later
+      - redd.it/<id>                   -> pass-through
+    Strips query/fragment.
     """
     if not raw:
         raise ValueError("Please paste a Reddit post URL.")
@@ -119,15 +164,20 @@ def normalize_reddit_url(raw: str) -> str:
     if not any(host == h or host.endswith("." + h) for h in valid_hosts):
         raise ValueError("That doesn't look like a Reddit URL.")
 
-    # redd.it shortlinks are OK
-    if "redd.it" in host:
-        return urlunparse(("https", host, u.path, "", "", ""))
-
-    # For reddit.com variants, must be a comments permalink
     path = u.path or "/"
-    if "/comments/" not in path:
-        raise ValueError("Please paste a direct post link that contains /comments/ (or use a redd.it shortlink).")
 
+    # redd.it shortlinks are OK (pass through, canonical host preserved)
+    if "redd.it" in host:
+        return urlunparse(("https", host, path, "", "", ""))
+
+    # reddit.com variants:
+    # allow either a comments permalink OR an /s/<token> app short path
+    is_comments = "/comments/" in path
+    is_s_short = bool(S_PATH_RE.search(path))
+    if not (is_comments or is_s_short):
+        raise ValueError("Please paste a direct post link that contains /comments/, a redd.it shortlink, or an app share link ending in /s/<token>.")
+
+    # Normalize to www.reddit.com and strip query/fragment
     return urlunparse(("https", "www.reddit.com", path, "", "", ""))
 
 # -------- LLM helpers (low volatility) --------
@@ -283,6 +333,7 @@ def index():
     summary = None
     data = {}
     error = None
+    url = None  # so we can reference after POST
 
     if request.method == "POST":
         # Guardrails
@@ -301,6 +352,10 @@ def index():
         # Robust URL handling + caching + timeout safeguards
         try:
             url = normalize_reddit_url(raw_url)
+            # If it's an /s/<token> app share link, resolve it to /comments/ permalink
+            parsed = urlparse(url)
+            if "reddit.com" in parsed.netloc.lower() and S_PATH_RE.search(parsed.path or ""):
+                url = resolve_reddit_s_short(url)
         except ValueError as ve:
             error = str(ve)
             return render_template("index.html", summary=None, error=error)

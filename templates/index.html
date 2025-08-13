@@ -45,22 +45,32 @@
       .disabled-ui{opacity:.6;pointer-events:none;user-select:none}
     </style>
 
-    <script>
-      // ---------- Regex + helpers ----------
-      const REDDIT_RE    = /^(https?:\/\/)?((www|old|np|m|new|amp)\.)?reddit\.com\/.*\/comments\/[A-Za-z0-9]+/i;
-      const REDDIT_SHORT = /^(https?:\/\/)?(www\.)?redd\.it\/[A-Za-z0-9]+/i;
+// ---------- Regex + helpers ----------
+const REDDIT_RE    = /^(https?:\/\/)?((www|old|np|m|new|amp)\.)?reddit\.com\/.*\/comments\/[A-Za-z0-9]+/i;
+const REDDIT_SHORT = /^(https?:\/\/)?(www\.)?redd\.it\/[A-Za-z0-9]+/i;
+// NEW: accept Reddit app short path (/s/<token>)
+const REDDIT_SPATH = /^(https?:\/\/)?((www|old|np|m|new|amp)\.)?reddit\.com\/.+\/s\/[A-Za-z0-9]+\/?$/i;
 
-      function normalizeRedditUrl(v){
-        if(!v) return v;
-        let url=v.trim();
-        if(!/^\w+:\/\//.test(url)) url='https://'+url;
-        try{
-          const u=new URL(url);
-          const host=u.hostname.toLowerCase();
-          if(host.includes('redd.it')) return `https://${host}${u.pathname}`;
-          return `https://www.reddit.com${u.pathname}`;
-        }catch{ return v; }
-      }
+function normalizeRedditUrl(v){
+  if(!v) return v;
+  let url=v.trim();
+  if(!/^\w+:\/\//.test(url)) url='https://'+url;
+  try{
+    const u=new URL(url);
+    const host=u.hostname.toLowerCase();
+
+    // Pass redd.it through
+    if(host.includes('redd.it')) return `https://${host}${u.pathname}`;
+
+    // NEW: keep /s/<token> path (backend will resolve it)
+    if(host.includes('reddit.com') && /\/s\/[A-Za-z0-9]+\/?$/.test(u.pathname)){
+      return `https://www.reddit.com${u.pathname}`;
+    }
+
+    // Existing: canonical reddit host + path
+    return `https://www.reddit.com${u.pathname}`;
+  }catch{ return v; }
+}
 
       // ---------- Local recent URLs ----------
       function loadRecent(){ try{ return JSON.parse(localStorage.getItem('recentUrls')||'[]'); }catch{ return []; } }
@@ -134,14 +144,15 @@
 
         // Realtime validation
         function validate(){
-          const v=urlInput.value.trim();
-          if(!v){ urlMsg.textContent=''; btn.disabled=true; return; }
-          const ok = REDDIT_RE.test(v)||REDDIT_SHORT.test(v);
-          urlMsg.textContent = ok ? 'Valid Reddit post URL ✅'
-                                  : 'Paste a Reddit post link (must include /comments/ or redd.it)';
-          urlMsg.className   = ok ? 'text-emerald-700 text-xs' : 'text-rose-600 text-xs';
-          btn.disabled = !ok;
-        }
+  const v=urlInput.value.trim();
+  if(!v){ urlMsg.textContent=''; btn.disabled=true; return; }
+  const ok = REDDIT_RE.test(v) || REDDIT_SHORT.test(v) || REDDIT_SPATH.test(v); // <-- include SPATH
+  urlMsg.textContent = ok ? 'Valid Reddit post URL ✅'
+                          : 'Paste a Reddit post link (supports comments/, redd.it, or /s/)';
+  urlMsg.className   = ok ? 'text-emerald-700 text-xs' : 'text-rose-600 text-xs';
+  btn.disabled = !ok;
+}
+
         validate();
 
         urlInput.addEventListener('input',()=>{
