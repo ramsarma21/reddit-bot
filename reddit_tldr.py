@@ -1,9 +1,11 @@
 import os
 import re
+import math
 from typing import List, Tuple
 from pathlib import Path
 
 import praw
+from praw.models import MoreComments
 from dotenv import load_dotenv
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
@@ -18,7 +20,6 @@ REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT", "reddit-tldr-bot")
 if not (REDDIT_CLIENT_ID and REDDIT_USER_AGENT):
     raise RuntimeError("Missing Reddit creds in .env (REDDIT_CLIENT_ID & REDDIT_USER_AGENT).")
 
-# If your Reddit app is 'Installed App', client_secret must be blank; if 'Script/Web App', it must be set.
 reddit = praw.Reddit(
     client_id=REDDIT_CLIENT_ID,
     client_secret=REDDIT_CLIENT_SECRET if REDDIT_CLIENT_SECRET is not None else "",
@@ -29,10 +30,8 @@ _analyzer = SentimentIntensityAnalyzer()
 
 # ---- public helpers used by app.py ----
 def verify_reddit_credentials() -> None:
-    """Raise a clear error if Reddit credentials are wrong or app type is mismatched."""
     try:
         _ = reddit.read_only
-        # low-cost request to ensure creds/app type are valid
         list(reddit.subreddit("python").hot(limit=1))
     except Exception as e:
         hint = (
@@ -49,42 +48,149 @@ def verify_reddit_credentials() -> None:
         raise RuntimeError(f"{e}\n\n{hint}") from e
 
 
-def fetch_submission_data(url: str, *, sort: str = "top", max_comments: int = 500) -> dict:
+def _sentiment_and_groups(comments: List[str]) -> tuple[dict, dict, int]:
     """
-    Return:
-      {
-        title, subreddit, selftext, paragraph, image_url, video_url, sentiment
-      }
+    VADER per comment; percentages softly weighted by upvotes if present in [score=..] tags.
+    Returns (percentages, groups, sample_size).
+    """
+    bins = {"pos": 0.0, "neu": 0.0, "neg": 0.0}
+    groups: dict[str, list[tuple[float, str]]] = {"pos": [], "neu": [], "neg": []}
+    n = 0
+    score_re = re.compile(r"\[score=(-?\d+)")
+
+    for body in comments:
+        try:
+            s = _analyzer.polarity_scores(body or "")
+            comp = s.get("compound", 0.0)
+
+            # weight by score (1.0–4.0 roughly)
+            w = 1.0
+            m = score_re.search(body)
+            if m:
+                try:
+                    sc = max(0, int(m.group(1)))
+                    w = 1.0 + min(3.0, math.log10(1.0 + sc))
+                except Exception:
+                    pass
+
+            if comp >= 0.05:
+                bins["pos"] += w; groups["pos"].append((comp, body))
+            elif comp <= -0.05:
+                bins["neg"] += w; groups["neg"].append((comp, body))
+            else:
+                bins["neu"] += w; groups["neu"].append((comp, body))
+            n += 1
+        except Exception:
+            continue
+
+    total_w = (bins["pos"] + bins["neu"] + bins["neg"]) or 1.0
+    pct = {k: round(v / total_w * 100.0, 1) for k, v in bins.items()}
+
+    # most informative first; trim to keep prompts tight
+    groups["pos"].sort(key=lambda t: t[0], reverse=True)
+    groups["neu"].sort(key=lambda t: abs(t[0]), reverse=True)
+    groups["neg"].sort(key=lambda t: abs(t[0]), reverse=True)
+    for k in ("pos", "neu", "neg"):
+        groups[k] = groups[k][:300]
+
+    return pct, groups, n
+
+
+def fetch_submission_data(url: str, *, sort: str = "top", max_comments: int | None = None) -> dict:
+    """
+    Auto-sizes when max_comments is None:
+      - cap at 300
+      - ensure at least 50
+      - if thread is large, lightly expand and cap replies per top-level
+      - avoid full-tree flattening on big threads
     """
     if not url or ("reddit.com" not in url and "redd.it" not in url):
         raise ValueError("Please provide a valid Reddit post URL.")
 
     submission = reddit.submission(url=url)
     _ = submission.title  # force fetch
+
+    total = int(getattr(submission, "num_comments", 0) or 0)
+    if max_comments is None:
+        if total <= 60:
+            eff = max(50, total)
+        elif total <= 150:
+            eff = 150
+        else:
+            eff = 300
+    else:
+        eff = max(50, min(1200, int(max_comments)))
+
     _apply_sort(submission, sort)
-    submission.comments.replace_more(limit=0)
 
     comments: List[str] = []
-    kept: List[str] = []
-    for c in submission.comments.list():
-        try:
-            if hasattr(c, "body") and _filter_comment(c.body, getattr(c, "author", None)):
-                text = c.body.strip()
-                # de-dup near-duplicates to cut boilerplate ("me too", copypasta)
-                if not _too_similar(text, kept):
-                    kept.append(text)
-                    comments.append(text)
-                    if len(comments) >= max_comments:
+    kept_for_dedup: List[str] = []
+
+    def add_text(txt: str):
+        if _filter_comment(txt):
+            if not _too_similar(txt, kept_for_dedup):
+                kept_for_dedup.append(txt)
+                comments.append(txt)
+
+    if total <= 80:
+        # Small/easy: expand fully once and finish.
+        submission.comment_limit = min(400, max(60, total + 40))
+        submission.comments.replace_more(limit=0)  # fully resolve (small thread)
+        for node in submission.comments.list():
+            if isinstance(node, MoreComments):
+                continue
+            body = getattr(node, "body", "") or ""
+            if body:
+                add_text(_with_meta(node))
+                if len(comments) >= eff:
+                    break
+    else:
+        # Big threads: keep network light. Do a shallow expansion and cap replies.
+        submission.comment_limit = min(800, eff + 120)
+        submission.comments.replace_more(limit=2, threshold=32)  # light expand only
+
+        top_level = list(submission.comments)
+        reply_cap = 3 if total >= 150 else 2
+
+        for c in top_level:
+            if len(comments) >= eff:
+                break
+            try:
+                add_text(_with_meta(c))
+            except Exception:
+                continue
+
+            taken = 0
+            # Use whatever replies are already loaded; don't force deeper expansion.
+            try:
+                for r in (c.replies or [])[:reply_cap]:
+                    if len(comments) >= eff:
                         break
-        except Exception:
-            continue
+                    add_text(_with_meta(r))
+                    taken += 1
+            except Exception:
+                pass
+
+        # If under budget, do a shallow sweep of already-loaded subtree (no extra replace_more)
+        if len(comments) < eff:
+            for c in top_level:
+                if len(comments) >= eff:
+                    break
+                try:
+                    for r in (c.replies or []):
+                        if len(comments) >= eff:
+                            break
+                        add_text(_with_meta(r))
+                except Exception:
+                    continue
 
     if not comments:
         raise RuntimeError("No usable comments were found for that post.")
 
-    paragraph = _make_paragraph(comments, sentence_limit=70)
-    sentiment = _sentiment_split(comments)
+    paragraph = _make_paragraph([_strip_meta_for_para(t) for t in comments], sentence_limit=70)
     image_url, video_url = _extract_media(submission)
+
+    sentiment, groups, sample_n = _sentiment_and_groups(comments)
 
     return {
         "title": submission.title or "",
@@ -94,6 +200,9 @@ def fetch_submission_data(url: str, *, sort: str = "top", max_comments: int = 50
         "image_url": image_url,
         "video_url": video_url,
         "sentiment": sentiment,
+        "groups": groups,
+        "effective_max": eff,
+        "sample_size": sample_n,
     }
 
 # ---- internal helpers ----
@@ -107,6 +216,17 @@ def _apply_sort(submission, sort: str):
     elif sort in ("q&a", "qa"): submission.comment_sort = "qa"
     else: submission.comment_sort = "top"
 
+def _with_meta(c) -> str:
+    body = (getattr(c, "body", "") or "").strip()
+    if not body:
+        return ""
+    score = getattr(c, "score", 0) or 0
+    replies = len(getattr(c, "replies", []) or [])
+    author = getattr(getattr(c, "author", None), "name", "") or ""
+    return f"[score={score} replies={replies} author=u/{author}] {body}"
+
+def _strip_meta_for_para(s: str) -> str:
+    return re.sub(r"^\s*\[[^\]]+\]\s*", "", s or "").strip()
 
 def _extract_media(submission) -> Tuple[str | None, str | None]:
     image_url, video_url = None, None
@@ -123,76 +243,21 @@ def _extract_media(submission) -> Tuple[str | None, str | None]:
         pass
     return image_url, video_url
 
-
-# -------- Comment Filtering 2.0 --------
-_BOT_MARKERS = (
-    "i am a bot",
-    "automoderator",
-    "this action was performed automatically",
-)
-_URL_RE = re.compile(r"(https?://\S+)")
-_MIN_LEN = 12
-# if comment is mostly URL gibberish, drop it
-def _mostly_linky(text: str) -> bool:
-    nonspace = len(re.sub(r"\s+", "", text))
-    links = _URL_RE.findall(text)
-    link_len = sum(len(L) for L in links)
-    return bool(links) and (link_len / max(1, nonspace) > 0.6)
-
-def _filter_comment(body: str, author) -> bool:
-    """Return True if this comment should be kept, False if it should be excluded."""
+def _filter_comment(body: str) -> bool:
     if not body or len(body.strip()) < 3:
         return False
-
-    lower_body = body.lower().strip()
-
-    # Skip deleted/removed/moderator/bot comments
-    if lower_body in ("[deleted]", "[removed]"):
+    t = body.lower().strip()
+    if t in ("[deleted]", "[removed]"):
         return False
-    if author and hasattr(author, "name") and author.name and "bot" in author.name.lower():
+    if "http://" in t or "https://" in t or "www." in t:
         return False
-    if "moderator" in lower_body:
-        return False
-
-    # Skip if comment contains any URL
-    if "http://" in lower_body or "https://" in lower_body or "www." in lower_body:
-        return False
-
-    # Skip if it's just a link or ad
-    if len(lower_body.split()) <= 3 and ("http" in lower_body or "www." in lower_body):
-        return False
-
     return True
 
-
-    # Author checks
-    try:
-        if author is not None:
-            name = str(getattr(author, "name", "") or "").lower()
-            if name == "automoderator":
-                return False
-            if getattr(author, "is_mod", False):
-                return False
-    except Exception:
-        pass
-
-    # Drop URL-only or mostly-URL blurbs
-    if _mostly_linky(text):
-        return False
-
-    # Drop trivial link-only lines
-    if _URL_RE.fullmatch(text.strip()):
-        return False
-
-    return True
-
-# Jaccard similarity de-dup to cut near-duplicates
 def _too_similar(text: str, kept: List[str], threshold: float = 0.85) -> bool:
-    import re
     tokens_a = set(re.findall(r"[a-zA-Z0-9']+", text.lower()))
     if not tokens_a:
         return False
-    for k in kept[-60:]:  # only compare to recent to keep it cheap
+    for k in kept[-60:]:
         tokens_b = set(re.findall(r"[a-zA-Z0-9']+", k.lower()))
         if not tokens_b:
             continue
@@ -203,35 +268,8 @@ def _too_similar(text: str, kept: List[str], threshold: float = 0.85) -> bool:
     return False
 
 def _make_paragraph(comments: List[str], sentence_limit: int = 70) -> str:
-    """
-    Normalize whitespace, split on sentence-ish boundaries, restore punctuation,
-    cap by sentence and length to keep LLM prompt efficient.
-    """
     text = " ".join(comments).replace("\n", " ").strip('"')
     text = re.sub(r"\s+", " ", text).strip()
-
-    # simple sentence split that keeps punctuation
     parts = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9\"'])", text)
     sentences = [s.strip() if s.endswith(('.', '!', '?')) else (s.strip() + ".") for s in parts if s.strip()]
     return "".join((s + " ") for s in sentences[:sentence_limit])[:20000].strip()
-
-def _sentiment_split(comments: List[str]) -> dict:
-    """Return percentage split of positive/neutral/negative using VADER."""
-    bins = {"pos": 0, "neu": 0, "neg": 0}
-    total = 0
-    for body in comments:
-        try:
-            s = _analyzer.polarity_scores(body or "")
-            comp = s.get("compound", 0.0)
-            if comp >= 0.05:
-                bins["pos"] += 1
-            elif comp <= -0.05:
-                bins["neg"] += 1
-            else:
-                bins["neu"] += 1
-            total += 1
-        except Exception:
-            continue
-    if total == 0:
-        return {"pos": 0.0, "neu": 0.0, "neg": 0.0}
-    return {k: round(v / total * 100.0, 1) for k, v in bins.items()}

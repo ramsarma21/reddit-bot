@@ -1,21 +1,17 @@
 <!doctype html>
 <html lang="en">
   <head>
+
     <meta charset="utf-8"/>
     <title>Reddit TL;DR</title>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
 
-    <!-- Tailwind: class-based dark mode -->
     <script>window.tailwind = { config: { darkMode: 'class' } };</script>
     <script src="https://cdn.tailwindcss.com"></script>
 
-    <!-- Theme color for mobile bars -->
     <meta id="meta-theme-color" name="theme-color" content="#f8fafc"/>
-
-    <!-- Theme tokens -->
     <link rel="stylesheet" href="/static/theme.css"/>
 
-    <!-- Default LIGHT; only enable dark if user previously chose it -->
     <script>
       (function () {
         const KEY = 'theme';
@@ -34,7 +30,6 @@
     </script>
 
     <style>
-      /* keep the dotted background in CSS (uses theme tokens) */
       body{
         background-image:
           radial-gradient(var(--grid-dot) 1px, transparent 1px),
@@ -45,34 +40,30 @@
       .disabled-ui{opacity:.6;pointer-events:none;user-select:none}
     </style>
 
-// ---------- Regex + helpers ----------
-const REDDIT_RE    = /^(https?:\/\/)?((www|old|np|m|new|amp)\.)?reddit\.com\/.*\/comments\/[A-Za-z0-9]+/i;
-const REDDIT_SHORT = /^(https?:\/\/)?(www\.)?redd\.it\/[A-Za-z0-9]+/i;
-// NEW: accept Reddit app short path (/s/<token>)
-const REDDIT_SPATH = /^(https?:\/\/)?((www|old|np|m|new|amp)\.)?reddit\.com\/.+\/s\/[A-Za-z0-9]+\/?$/i;
+    <script>
+      // ---------- Regex + helpers ----------
+      const REDDIT_RE     = /^(https?:\/\/)?((www|old|np|m|new|amp)\.)?reddit\.com\/.*\/comments\/[A-Za-z0-9]+/i;
+      const REDDIT_SHORT  = /^(https?:\/\/)?(www\.)?redd\.it\/[A-Za-z0-9]+/i;
+      const REDDIT_SPATH  = /^(https?:\/\/)?((www|old|np|m|new|amp)\.)?reddit\.com\/.+\/s\/[A-Za-z0-9]+\/?$/i;
 
-function normalizeRedditUrl(v){
-  if(!v) return v;
-  let url=v.trim();
-  if(!/^\w+:\/\//.test(url)) url='https://'+url;
-  try{
-    const u=new URL(url);
-    const host=u.hostname.toLowerCase();
+      function normalizeRedditUrl(v){
+        if(!v) return v;
+        let url=v.trim();
+        if(!/^\w+:\/\//.test(url)) url='https://'+url;
+        try{
+          const u=new URL(url);
+          const host=u.hostname.toLowerCase();
+          if(host.includes('redd.it')) return `https://${host}${u.pathname}`;
+          if(host.includes('reddit.com') && REDDIT_SPATH.test(url)){
+            return `https://www.reddit.com${u.pathname}`;
+          }
+          if(host.includes('reddit.com')){
+            return `https://www.reddit.com${u.pathname}`;
+          }
+          return url;
+        }catch{ return v; }
+      }
 
-    // Pass redd.it through
-    if(host.includes('redd.it')) return `https://${host}${u.pathname}`;
-
-    // NEW: keep /s/<token> path (backend will resolve it)
-    if(host.includes('reddit.com') && /\/s\/[A-Za-z0-9]+\/?$/.test(u.pathname)){
-      return `https://www.reddit.com${u.pathname}`;
-    }
-
-    // Existing: canonical reddit host + path
-    return `https://www.reddit.com${u.pathname}`;
-  }catch{ return v; }
-}
-
-      // ---------- Local recent URLs ----------
       function loadRecent(){ try{ return JSON.parse(localStorage.getItem('recentUrls')||'[]'); }catch{ return []; } }
       function saveRecent(url){
         const arr=loadRecent();
@@ -81,40 +72,17 @@ function normalizeRedditUrl(v){
         localStorage.setItem('recentUrls',JSON.stringify(next));
       }
 
-     document.addEventListener('DOMContentLoaded',()=>{
-  const form       = document.getElementById('tldr-form');
-  const btn        = document.getElementById('submit-btn');
-  const spin       = document.getElementById('spinner');
-  const urlInput   = document.getElementById('url');
-  const urlMsg     = document.getElementById('url-msg');
-  const etaBox     = document.getElementById('eta');
-  const progress   = document.getElementById('progress');
-  const recentSel  = document.getElementById('recent');
-  const sortSelect = document.querySelector('select[name="sort"]');
-  const maxRadios  = Array.from(document.querySelectorAll('input[name="max_comments"]'));
-  const maxLabels  = Array.from(document.querySelectorAll('[data-max-label]'));
-  const DEFAULT_MAX = '{{ current_max_comments or 500 }}' || '500';
+      document.addEventListener('DOMContentLoaded',()=>{
+        const form       = document.getElementById('tldr-form');
+        const btn        = document.getElementById('submit-btn');
+        const spin       = document.getElementById('spinner');
+        const urlInput   = document.getElementById('url');
+        const urlMsg     = document.getElementById('url-msg');
+        const etaBox     = document.getElementById('eta');
+        const progress   = document.getElementById('progress');
+        const recentSel  = document.getElementById('recent');
 
-  // NEW: if we just loaded a page with results, clear the URL so the placeholder shows
-  const justLoadedWithResult = spin && spin.dataset.active === '1';
-  if (justLoadedWithResult) {
-    urlInput.value = '';                // show placeholder "www.reddit.com"
-    urlMsg.textContent = '';
-    urlInput.readOnly = false;
-    urlInput.classList.remove('disabled-ui');
-
-    // Re-enable any controls we locked during submit
-    if (recentSel) { recentSel.removeAttribute('disabled'); recentSel.classList.remove('disabled-ui'); }
-    if (sortSelect){ sortSelect.removeAttribute('disabled'); sortSelect.classList.remove('disabled-ui'); }
-    maxRadios.forEach(r => r.removeAttribute('disabled'));
-    maxLabels.forEach(l => l.classList.remove('disabled-ui'));
-
-    // Tidy progress/ETA (optional)
-    if (progress) progress.style.width = '0%';
-    if (etaBox) etaBox.textContent = '';
-  }
-
-        // ----- Theme toggle -----
+        // Theme
         const KEY = 'theme';
         const themeBtn  = document.getElementById('theme-toggle');
         const metaTheme = document.getElementById('meta-theme-color');
@@ -134,7 +102,7 @@ function normalizeRedditUrl(v){
           syncToggleIcon();
         }
 
-        // Populate "Recent posts" dropdown
+        // Recent
         const recent = loadRecent();
         if(recent.length){
           recentSel.innerHTML = '<option value="">Recent posts…</option>' +
@@ -142,59 +110,90 @@ function normalizeRedditUrl(v){
           recentSel.classList.remove('hidden');
         }
 
-        // Realtime validation
+        // Validate
         function validate(){
-  const v=urlInput.value.trim();
-  if(!v){ urlMsg.textContent=''; btn.disabled=true; return; }
-  const ok = REDDIT_RE.test(v) || REDDIT_SHORT.test(v) || REDDIT_SPATH.test(v); // <-- include SPATH
-  urlMsg.textContent = ok ? 'Valid Reddit post URL ✅'
-                          : 'Paste a Reddit post link (supports comments/, redd.it, or /s/)';
-  urlMsg.className   = ok ? 'text-emerald-700 text-xs' : 'text-rose-600 text-xs';
-  btn.disabled = !ok;
-}
-
+          const v=urlInput.value.trim();
+          if(!v){ urlMsg.textContent=''; btn.disabled=true; return; }
+          const ok = REDDIT_RE.test(v)||REDDIT_SHORT.test(v)||REDDIT_SPATH.test(v);
+          urlMsg.textContent = ok ? 'Valid Reddit post URL ✅'
+                                  : 'Paste a Reddit post link (/comments/, /s/, redd.it)';
+          urlMsg.className   = ok ? 'text-emerald-700 text-xs' : 'text-rose-600 text-xs';
+          btn.disabled = !ok;
+        }
         validate();
 
         urlInput.addEventListener('input',()=>{
           const cur=urlInput.value;
           const norm=normalizeRedditUrl(cur);
-          if(norm && (REDDIT_RE.test(cur)||REDDIT_SHORT.test(cur)) && cur!==norm){
+          if(norm && (REDDIT_RE.test(cur)||REDDIT_SHORT.test(cur)||REDDIT_SPATH.test(cur)) && cur!==norm){
             urlInput.value=norm;
           }
           validate();
         });
 
-        // ETA + progress (rough)
-        function estimateSeconds(){
-          const max = Number((document.querySelector('input[name="max_comments"]:checked')||{}).value||500);
-          return Math.min(20,Math.round(2+max*0.012));
+        // Reset input after results
+        const justLoadedWithResult = spin && spin.dataset.active === '1';
+        if (justLoadedWithResult) {
+          urlInput.value = '';
+          urlMsg.textContent = '';
+          btn.disabled = true;
+          urlInput.readOnly = false;
+          urlInput.classList.remove('disabled-ui');
+          if (recentSel) { recentSel.value = ''; recentSel.removeAttribute('disabled'); recentSel.classList.remove('disabled-ui'); }
+          if (progress) progress.style.width = '0%';
+          if (etaBox) etaBox.textContent = '';
         }
-        let timer=null,start=0,target=0;
-        function startProgress(){
-          start=Date.now(); target=estimateSeconds();
-          let pct=5; progress.style.width=pct+'%'; etaBox.textContent=`~${target}s`;
-          timer=setInterval(()=>{
-            const elapsed=(Date.now()-start)/1000;
-            pct=Math.min(90,Math.max(pct+1,(elapsed/target)*85));
-            progress.style.width=pct.toFixed(0)+'%';
-            etaBox.textContent=`~${Math.max(1,Math.ceil(target-elapsed))}s`;
-          },180);
-        }
+
+        // Progress (simple)
+       function estimateSeconds() {
+  // Conservative baseline + tiny jitter; add a bit for /s/ or redd.it redirects
+  const url = (document.getElementById('url')?.value || '').toLowerCase();
+  let base = 30; // baseline seconds
+  if (/\/s\//.test(url) || /redd\.it/.test(url)) base += 2;
+  base += Math.random() * 3 - 1; // -1..+2s jitter so it feels less robotic
+  return Math.max(8, Math.min(28, Math.round(base)));
+}
+
+let progressRAF = null, start = 0, target = 0;
+function startProgress(){
+  start  = performance.now();
+  target = estimateSeconds() * 1000;
+
+  if (progress) progress.style.width = '2%';
+  if (etaBox)    etaBox.textContent = `~${Math.ceil(target/1000)}s`;
+
+  // cancel any previous animation loop
+  if (progressRAF) cancelAnimationFrame(progressRAF);
+
+  const tick = (now) => {
+    const elapsed = now - start;
+    const ratio   = Math.max(0, elapsed / target);
+
+    // Smooth easing that asymptotically approaches 97% so we don't "finish" too early
+    const eased = 1 - Math.exp(-2.6 * ratio); // 0 → ~1 smoothly
+    const pct   = Math.min(97, 5 + eased * 92); // start ~5%, cap 97%
+
+    if (progress) progress.style.width = pct.toFixed(1) + '%';
+
+    const remaining = Math.max(1, Math.ceil((target - elapsed) / 1000));
+    if (etaBox) etaBox.textContent = `~${remaining}s`;
+
+    progressRAF = requestAnimationFrame(tick);
+  };
+
+  progressRAF = requestAnimationFrame(tick);
+}
+
 
         function lockUI() {
           urlInput.readOnly = true;
           urlInput.classList.add('disabled-ui');
           recentSel.setAttribute('disabled', ''); recentSel.classList.add('disabled-ui');
-          sortSelect.setAttribute('disabled', ''); sortSelect.classList.add('disabled-ui');
-          maxRadios.forEach(r => r.setAttribute('disabled', ''));
-          maxLabels.forEach(l => l.classList.add('disabled-ui'));
         }
 
         function resetFormUI(){
           urlInput.value=''; urlMsg.textContent=''; btn.disabled=true;
           btn.classList.remove('opacity-70','cursor-not-allowed');
-          sortSelect.value='top';
-          maxRadios.forEach(r=>r.checked=(r.value===String(DEFAULT_MAX)));
           progress.style.width='0%'; etaBox.textContent=''; spin.classList.add('hidden');
         }
 
@@ -204,37 +203,45 @@ function normalizeRedditUrl(v){
           urlInput.dispatchEvent(new Event('input'));
         });
 
-        if(form){
-          form.addEventListener('submit',()=>{
-            saveRecent(urlInput.value);
-            btn.disabled=true; btn.classList.add('opacity-70','cursor-not-allowed');
-            spin.classList.remove('hidden');
-            startProgress(); lockUI();
-          });
-        }
+if (form) {
+  form.addEventListener('submit', (e) => {
+    e.preventDefault(); // let UI paint spinner/progress before navigating
+
+    saveRecent(urlInput.value);
+
+    // Visual/lock state
+    btn.disabled = true;
+    btn.classList.add('opacity-70','cursor-not-allowed');
+    spin.classList.remove('hidden');
+    startProgress();
+    lockUI();
+
+    // Ensure spinner/progress render on mobile before submit
+    requestAnimationFrame(() => {
+      setTimeout(() => form.submit(), 60);
+    });
+  });
+}
+
+
         if(spin.dataset.active!=='1'){ spin.classList.add('hidden'); }
 
-        // restore selected max
-        const r=maxRadios.find(x=>x.value===String(DEFAULT_MAX)); if(r) r.checked=true;
-
-        // Copy TL;DR
-        const copyBtn = document.getElementById('copy-btn');
-        const copyLabel = document.getElementById('copy-label');
-        const tldrEl  = document.getElementById('tldr-text');
-        if (copyBtn && copyLabel && tldrEl) {
-          copyBtn.addEventListener('click', async () => {
-            try {
-              await navigator.clipboard.writeText(tldrEl.innerText || '');
-              const prev = copyLabel.textContent;
-              copyLabel.textContent = 'Copied!';
-              setTimeout(()=> copyLabel.textContent = prev, 1500);
-            } catch {
-              const prev = copyLabel.textContent;
-              copyLabel.textContent = 'Failed';
-              setTimeout(()=> copyLabel.textContent = prev, 1500);
-            }
-          });
-        }
+        // sentiment expand toggles
+        document.addEventListener('click', (e)=>{
+          const btn = e.target.closest('button.sent-expand');
+          if(!btn) return;
+          const panelId = btn.getAttribute('aria-controls');
+          const panel = document.getElementById(panelId);
+          const svg   = btn.querySelector('svg');
+          const open  = btn.getAttribute('aria-expanded') === 'true';
+          btn.setAttribute('aria-expanded', String(!open));
+          if(panel){
+            panel.style.maxHeight = open ? '0px' : (panel.scrollHeight + 'px');
+          }
+          if(svg){
+            svg.style.transform = open ? 'rotate(0deg)' : 'rotate(180deg)';
+          }
+        });
       });
     </script>
   </head>
@@ -242,14 +249,11 @@ function normalizeRedditUrl(v){
   <body class="min-h-screen">
     <div id="page-bg" aria-hidden="true"></div>
 
-    <!-- WIDER LAYOUT -->
     <div class="max-w-6xl mx-auto p-6 sm:p-8">
-      <!-- Header -->
       <header class="flex items-center gap-4 justify-between">
         <div class="flex items-center gap-4">
           <div class="w-12 h-12 rounded-2xl bg-gradient-to-br from-[#ffb347] via-[#ff6a33] to-[#ff4500] text-white grid place-items-center text-xl shadow-lg">R</div>
           <div>
-            <!-- Heading uses theme variables -->
             <h1 class="text-4xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-[var(--heading-grad-from)] to-[var(--heading-grad-to)]">
               Reddit TL;DR
             </h1>
@@ -257,7 +261,6 @@ function normalizeRedditUrl(v){
           </div>
         </div>
 
-        <!-- Theme toggle -->
         <button id="theme-toggle" type="button"
           class="inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm font-semibold shadow-md transition
                  bg-slate-900 text-white hover:bg-slate-800 ring-1 ring-slate-950/15
@@ -305,50 +308,25 @@ function normalizeRedditUrl(v){
               <div id="url-msg" class="mt-2 text-xs text-[color:var(--text-muted)]"></div>
             </div>
 
-            <!-- Controls -->
-            <div class="grid sm:grid-cols-2 gap-8">
-              <!-- Sort -->
-              <div>
-                <label class="text-sm text-[color:var(--text)] flex items-center gap-2">
-                  <svg class="w-5 h-5 text-[color:var(--icon)]" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 7h13M3 12h9M3 17h5" stroke-width="1.5" stroke-linecap="round"/></svg>
-                  <span>Sort</span>
-                </label>
-                <select name="sort" class="mt-3 w-full border rounded-2xl px-4 py-3.5 text-base bg-[var(--input-bg)] text-[color:var(--input-text)] focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 shadow-sm border-[color:var(--input-border)]">
-                  <option value="top" {% if current_sort=='top' %}selected{% endif %}>Top</option>
-                  <option value="new" {% if current_sort=='new' %}selected{% endif %}>New</option>
-                  <option value="controversial" {% if current_sort=='controversial' %}selected{% endif %}>Controversial</option>
-                  <option value="best" {% if current_sort=='best' %}selected{% endif %}>Best</option>
-                  <option value="hot" {% if current_sort=='hot' %}selected{% endif %}>Hot</option>
-                  <option value="old" {% if current_sort=='old' %}selected{% endif %}>Old</option>
-                  <option value="q&amp;a" {% if current_sort in ['q&a','qa'] %}selected{% endif %}>Q&amp;A</option>
-                </select>
-              </div>
+           <!-- Controls -->
+<!-- Force Top sort without showing a selector -->
+<input type="hidden" name="sort" value="top" />
 
-              <!-- Preset Max Comments -->
-              <div>
-                <label class="text-sm text-[color:var(--text)] flex items-center gap-2">
-                  <svg class="w-5 h-5 text-[color:var(--icon)]" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 7h12M6 12h12M6 17h12" stroke-width="1.5" stroke-linecap="round"/></svg>
-                  <span>Comment limit</span>
-                </label>
-                <div class="mt-3 grid grid-cols-5 gap-3">
-                  {% for n in [50,100,250,500,1000] %}
-                  <label class="relative cursor-pointer select-none" data-max-label>
-                    <input type="radio" name="max_comments" value="{{ n }}" class="peer sr-only"
-                           {% if (current_max_comments or 500) == n %}checked{% endif %} />
-<span class="block rounded-2xl px-4 py-3 border bg-[var(--chip-bg)] text-[color:var(--chip-text)] text-center text-base transition
-             hover:shadow-sm border-[color:var(--chip-border)]
-             peer-checked:bg-gradient-to-r peer-checked:from-[#ffb347] peer-checked:via-[#ff6a33] peer-checked:to-[#ff4500]
-             peer-checked:text-white peer-checked:border-transparent peer-checked:shadow
-             focus-within:ring-2 focus-within:ring-indigo-300">
-  {{ n }}
-</span>
+<div class="grid sm:grid-cols-1 gap-8">
+  <!-- Heads up (auto sizing) -->
+  <div>
+    <label class="text-sm text-[color:var(--text)] flex items-center gap-2">
+      <svg class="w-5 h-5 text-[color:var(--icon)]" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+        <path d="M12 8v4m0 4h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>
+      <span>Heads up</span>
+    </label>
+    <p class="mt-3 text-sm text-[color:var(--text-muted)]">
+      Posts with lots of comments may take longer to load. Comments may be capped on very large threads.
+    </p>
+  </div>
+</div>
 
-                  </label>
-                  {% endfor %}
-                </div>
-                <p class="text-xs text-[color:var(--text-muted)] mt-2">Higher = slower; 250–500 is a good balance.</p>
-              </div>
-            </div>
 
             <!-- Submit -->
             <div class="section-divider pt-6">
@@ -358,7 +336,6 @@ function normalizeRedditUrl(v){
                   Summarize
                 </button>
 
-                <!-- spinner + ETA -->
                 <div id="spinner" data-active="{% if summary or error %}1{% else %}0{% endif %}" class="hidden flex items-center gap-2 text-[color:var(--text)]">
                   <svg class="animate-spin h-6 w-6" viewBox="0 0 24 24">
                     <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -387,7 +364,6 @@ function normalizeRedditUrl(v){
       {% endif %}
 
       {% if title or image_url or video_url %}
-      <!-- POST CARD (padding restored) -->
       <section class="mt-8 card">
         <div class="p-6 sm:p-10">
           <div class="flex items-center gap-2">
@@ -408,39 +384,78 @@ function normalizeRedditUrl(v){
       {% endif %}
 
       {% if sentiment %}
-      <!-- SENTIMENT CARD (padding restored) -->
       <section class="mt-8 card">
         <div class="p-6 sm:p-10">
           <div class="flex items-center gap-3 mb-3">
-            <h2 class="text-2xl font-bold text-[color:var(--text-strong)]">Comment sentiment</h2>
-            <span class="text-2xl">😊</span>
-          </div>
+  <h2 class="text-2xl font-bold text-[color:var(--text-strong)]">Comment sentiment</h2>
+  <span class="text-2xl">😊</span>
+  {% if sample_size %}
+    <span class="ml-2 text-sm text-[color:var(--text-muted)]">
+      based on {{ sample_size }} comments
+    </span>
+  {% endif %}
+</div>
+
+
           {% set pos = (sentiment.get('pos', 0) | float) %}
           {% set neu = (sentiment.get('neu', 0) | float) %}
           {% set neg = (sentiment.get('neg', 0) | float) %}
-          <div class="mt-2 space-y-4">
+
+          <div class="mt-2 space-y-5">
+            <!-- Positive -->
             <div>
-              <div class="flex justify-between text-sm text-[color:var(--text)]">
-                <span>🙂 Positive</span><span>{{ pos | round(1) }}%</span>
+              <div class="flex justify-between items-center text-sm text-[color:var(--text)]">
+                <span>🙂 Positive</span>
+                <div class="flex items-center gap-2">
+                  <span>{{ pos | round(1) }}%</span>
+                  <button type="button" class="sent-expand inline-flex items-center justify-center w-7 h-7 rounded-full hover:bg-[var(--hover-bg)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--ring)]" aria-expanded="false" aria-controls="sent-pos" title="Show details">
+                    <svg class="w-4 h-4 transition-transform duration-200 pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 9l6 6 6-6" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    <span class="sr-only">Toggle positive details</span>
+                  </button>
+                </div>
               </div>
-              <div class="w-full h-3 rounded-full bg-[color:var(--track)]">
-                <div class="h-3 rounded-full bg-emerald-500" style="width: {{ pos | round(3) }}%;"></div>
+              <div class="w-full h-3 rounded-full bg-[color:var(--track)]"><div class="h-3 rounded-full bg-emerald-500" style="width: {{ pos | round(3) }}%;"></div></div>
+              <div id="sent-pos" class="mt-3 overflow-hidden max-h-0 transition-[max-height] duration-300 ease-in-out">
+                {% if pos_summary %}<p class="text-sm text-[color:var(--text)] whitespace-pre-wrap">{{ pos_summary }}</p>
+                {% else %}<p class="text-sm text-[color:var(--text-muted)]">No positive details available.</p>{% endif %}
               </div>
             </div>
+
+            <!-- Neutral -->
             <div>
-              <div class="flex justify-between text-sm text-[color:var(--text)]">
-                <span>😐 Neutral</span><span>{{ neu | round(1) }}%</span>
+              <div class="flex justify-between items-center text-sm text-[color:var(--text)]">
+                <span>😐 Neutral</span>
+                <div class="flex items-center gap-2">
+                  <span>{{ neu | round(1) }}%</span>
+                  <button type="button" class="sent-expand inline-flex items-center justify-center w-7 h-7 rounded-full hover:bg-[var(--hover-bg)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--ring)]" aria-expanded="false" aria-controls="sent-neu" title="Show details">
+                    <svg class="w-4 h-4 transition-transform duration-200 pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 9l6 6 6-6" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    <span class="sr-only">Toggle neutral details</span>
+                  </button>
+                </div>
               </div>
-              <div class="w-full h-3 rounded-full bg-[color:var(--track)]">
-                <div class="h-3 rounded-full bg-slate-500" style="width: {{ neu | round(3) }}%;"></div>
+              <div class="w-full h-3 rounded-full bg-[color:var(--track)]"><div class="h-3 rounded-full bg-slate-500" style="width: {{ neu | round(3) }}%;"></div></div>
+              <div id="sent-neu" class="mt-3 overflow-hidden max-h-0 transition-[max-height] duration-300 ease-in-out">
+                {% if neu_summary %}<p class="text-sm text-[color:var(--text)] whitespace-pre-wrap">{{ neu_summary }}</p>
+                {% else %}<p class="text-sm text-[color:var(--text-muted)]">No neutral details available.</p>{% endif %}
               </div>
             </div>
+
+            <!-- Negative -->
             <div>
-              <div class="flex justify-between text-sm text-[color:var(--text)]">
-                <span>🙁 Negative</span><span>{{ neg | round(1) }}%</span>
+              <div class="flex justify-between items-center text-sm text-[color:var(--text)]">
+                <span>🙁 Negative</span>
+                <div class="flex items-center gap-2">
+                  <span>{{ neg | round(1) }}%</span>
+                  <button type="button" class="sent-expand inline-flex items-center justify-center w-7 h-7 rounded-full hover:bg-[var(--hover-bg)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--ring)]" aria-expanded="false" aria-controls="sent-neg" title="Show details">
+                    <svg class="w-4 h-4 transition-transform duration-200 pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 9l6 6 6-6" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    <span class="sr-only">Toggle negative details</span>
+                  </button>
+                </div>
               </div>
-              <div class="w-full h-3 rounded-full bg-[color:var(--track)]">
-                <div class="h-3 rounded-full bg-rose-500" style="width: {{ neg | round(3) }}%;"></div>
+              <div class="w-full h-3 rounded-full bg-[color:var(--track)]"><div class="h-3 rounded-full bg-rose-500" style="width: {{ neg | round(3) }}%;"></div></div>
+              <div id="sent-neg" class="mt-3 overflow-hidden max-h-0 transition-[max-height] duration-300 ease-in-out">
+                {% if neg_summary %}<p class="text-sm text-[color:var(--text)] whitespace-pre-wrap">{{ neg_summary }}</p>
+                {% else %}<p class="text-sm text-[color:var(--text-muted)]">No negative details available.</p>{% endif %}
               </div>
             </div>
           </div>
@@ -449,7 +464,6 @@ function normalizeRedditUrl(v){
       {% endif %}
 
       {% if summary %}
-      <!-- TL;DR CARD (padding restored) -->
       <section class="mt-8 card">
         <div class="p-6 sm:p-10">
           <div class="flex items-center justify-between">
@@ -463,4 +477,10 @@ function normalizeRedditUrl(v){
       {% endif %}
     </div>
   </body>
+
+
+  {% if effective_max or sample_size %}
+<meta id="eff-meta" data-eff="{{ effective_max or '' }}" data-sample="{{ sample_size or '' }}">
+{% endif %}
+
 </html>
