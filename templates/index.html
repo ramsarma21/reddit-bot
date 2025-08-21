@@ -148,7 +148,7 @@
        function estimateSeconds() {
   // Conservative baseline + tiny jitter; add a bit for /s/ or redd.it redirects
   const url = (document.getElementById('url')?.value || '').toLowerCase();
-  let base = 30; // baseline seconds
+  let base = 10; // baseline seconds
   if (/\/s\//.test(url) || /redd\.it/.test(url)) base += 2;
   base += Math.random() * 3 - 1; // -1..+2s jitter so it feels less robotic
   return Math.max(8, Math.min(28, Math.round(base)));

@@ -24,7 +24,7 @@ load_dotenv(dotenv_path=ENV_PATH)
 # --- OpenRouter config ---
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_BASE = os.getenv("OPENROUTER_BASE", "https://openrouter.ai/api/v1")
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-r1-0528:free")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-oss-20b:free")
 
 SITE_URL = os.getenv("SITE_URL", "")
 SITE_NAME = os.getenv("SITE_NAME", "")
@@ -133,6 +133,7 @@ _SYSTEM_FINAL = (
     "Do not use quotes verbatim, parahprase them"
     "if neutral dominates, say the tone is mixed/neutral. Avoid bullet lists and headings."
     "Do not use quotes verbatim, parahprase them"
+    "Add a final 11th sentence to wrap everything in one assertion thesis like statement."
 
 )
 
