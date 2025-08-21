@@ -116,7 +116,7 @@
           if(!v){ urlMsg.textContent=''; btn.disabled=true; return; }
           const ok = REDDIT_RE.test(v)||REDDIT_SHORT.test(v)||REDDIT_SPATH.test(v);
           urlMsg.textContent = ok ? 'Valid Reddit post URL ✅'
-                                  : 'Paste a Reddit post link (/comments/, /s/, redd.it)';
+                                  : 'Paste a valid Reddit post link (/comments/, /s/, redd.it)';
           urlMsg.className   = ok ? 'text-emerald-700 text-xs' : 'text-rose-600 text-xs';
           btn.disabled = !ok;
         }
