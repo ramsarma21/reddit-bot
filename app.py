@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import json
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 from concurrent.futures import ThreadPoolExecutor
@@ -113,31 +114,8 @@ def normalize_reddit_url(raw: str) -> str:
     return urlunparse(("https", "www.reddit.com", u.path, "", "", ""))
 
 # -------- LLM helpers --------
-_SYSTEM_GROUP = (
-    "You are an expert in the topic at hand (identify it). You don't make it sound like a report, but you know what you are talking about."
-    "You are helping summarize Reddit comments. Ignore memes, one-liners, and jokey asides "
-    "unless they meaningfully reflect sentiment. Keep 5–7 sentences, factual and specific. "
-    "Prefer concrete claims, reasons, and recurring themes; drop usernames/links."
-    "Ignore replies that do not value to the original comment"
-    "Write in a way that it appears as just a regular tl;dr and does not include information that the reader does not need to see. Just include important points from that sentiment group. Make it clean, do not user numbers, make it a paragraph"
-    "Do not use quotes verbatim, parahprase them"
 
-)
-
-_SYSTEM_FINAL = (
-    "You are an expert in the topic at hand (identify it). You don't make it sound like a report, but you know what you are talking about."
-    "Write a single, coherent paragraph (8–10 sentences) that summarizes discussion across sentiment groups in a way that readers can find out all the points mentioned in the comments with just a single read of the tl;dr. "
-    "Open by reporting the largest distribution but not explicitly (e.g., 'mostly positive'), "
-    "then synthesize consistent the most important and key points from all groups, in a way that all important points are mentioned. Do not contradict the distribution; "
-    "Write in a way that it appears as just a regular tl;dr and does not include information that the reader does not need to see. Just include important points from that sentiment group. Make it clean, do not user numbers, make it a paragraph"
-    "Do not use quotes verbatim, parahprase them"
-    "if neutral dominates, say the tone is mixed/neutral. Avoid bullet lists and headings."
-    "Do not use quotes verbatim, parahprase them"
-    "Add a final 11th sentence to wrap everything in one assertion thesis like statement."
-
-)
-
-def _call_llm_with_retry(messages, attempts: int = 3, timeout: int = 60):
+def _call_llm_with_retry(messages, attempts: int = 3, timeout: int = 60, temperature: float = 0.2, top_p: float = 0.8):
     last = None
     headers = {}
     if SITE_URL:
@@ -150,10 +128,8 @@ def _call_llm_with_retry(messages, attempts: int = 3, timeout: int = 60):
             r = llm.chat.completions.create(
                 model=OPENROUTER_MODEL,
                 messages=messages,
-                temperature=0.2,
-                top_p=0.2,
-                frequency_penalty=0.0,
-                presence_penalty=0.0,
+                temperature=temperature,
+                top_p=top_p,
                 extra_body={"seed": 42},
                 extra_headers=headers or None,
                 timeout=timeout,
@@ -163,6 +139,68 @@ def _call_llm_with_retry(messages, attempts: int = 3, timeout: int = 60):
             last = e
             time.sleep(0.6 * (i + 1))
     raise last
+
+# ====== NEW: Structured extractor prompts ======
+
+_SYSTEM_GROUP = (
+    "You summarize ONLY from the provided Reddit comments. "
+    "No outside knowledge, no quotes, no usernames, no links. "
+    "Return STRICT JSON that matches the schema—no extra text. "
+    "Prefer specifics (pacing, motivation, choreography, etc.) over vibes. "
+    "If evidence is weak/noisy, set low_confidence true."
+)
+
+_GROUP_USER_TMPL = """Task: Extract the strongest opinion units from this sentiment group: {label}
+
+Rules:
+- Cluster similar remarks and identify 3–6 recurring claims. Fewer if weak/noisy.
+- Each claim must be concrete and grounded in the comments.
+- Provide short paraphrase fragments that typify the claim (no quotes).
+- Do NOT invent numbers or facts.
+
+Output JSON schema:
+{{
+  "topic": "string",
+  "sentiment": "{label}",
+  "low_confidence": boolean,
+  "claims": [
+    {{
+      "claim": "concise statement",
+      "why_it_matters": "1 short reason",
+      "evidence": ["3-10 word paraphrase fragments"],
+      "prevalence_hint": "high|medium|low"
+    }}
+  ]
+}}
+
+Comments:
+{blob}
+"""
+
+# ====== NEW: Final TL;DR prompt ======
+
+_SYSTEM_FINAL = (
+    "You write newsroom-quality TL;DRs. One paragraph. 110–140 words. "
+    "No lists, no headers, no quotes, no hedging filler unless reflected in inputs. "
+    "Prioritize claims with higher prevalence_hint and higher-confidence groups. "
+    "Stay strictly inside the provided data."
+)
+
+_FINAL_USER_TMPL = """You are summarizing a Reddit thread about: {topic}
+
+Structured inputs:
+- positive_claims: {pos_json}
+- neutral_claims: {neu_json}
+- negative_claims: {neg_json}
+- distribution_hint: positive={pos:.1f}%, neutral={neu:.1f}%, negative={neg:.1f}%
+
+Write ONE paragraph that:
+- Opens with a clear lede that reflects the dominant stance without naming percentages.
+- Weaves 2–3 strongest supporting points with brief rationale.
+- Acknowledges 1–2 key counterpoints.
+- Concludes with a synthesis (what readers likely take away).
+- Strict length: 110–140 words. Plain text only.
+"""
 
 def _enforce_single_paragraph(text: str, max_sentences: int = 10) -> str:
     import re as _re
@@ -178,27 +216,91 @@ def _enforce_single_paragraph(text: str, max_sentences: int = 10) -> str:
     cleaned = _re.sub(r"\s{2,}", " ", cleaned).strip(" -–")
     return cleaned
 
-def _summarize_group(label: str, texts: list[str]) -> str:
-    # tighter cap to keep calls snappy
+# ====== NEW: extractor + renderer ======
+
+def _extract_group_claims(label: str, texts: list[str]) -> dict:
     blob = " ".join(texts)[:4000]
     if not blob.strip():
-        return ""
+        return {"topic": "", "sentiment": label, "low_confidence": True, "claims": []}
     r = _call_llm_with_retry(
         [
             {"role": "system", "content": _SYSTEM_GROUP},
-            {"role": "user", "content": f"Sentiment group: {label}\n\nComments:\n{blob}\n\nWrite a 5–7 sentence summary."},
+            {"role": "user", "content": _GROUP_USER_TMPL.format(label=label, blob=blob)},
         ],
         timeout=65,
+        temperature=0.2,   # precise extraction
+        top_p=0.9          # allow some diversity for claim discovery
     )
-    return _enforce_single_paragraph((r.choices[0].message.content or "").strip(), max_sentences=7)
+    content = (r.choices[0].message.content or "").strip()
+    try:
+        data = json.loads(content)
+        # minimal validation
+        if not isinstance(data, dict) or "claims" not in data:
+            raise ValueError("bad schema")
+        data.setdefault("low_confidence", False)
+        return data
+    except Exception:
+        # Fallback: create a single-claim structure from a plain summary
+        fallback = _plain_summary_fallback(label, blob)
+        return fallback
 
-def _final_tldr_from_groups(sentiment: dict, pos_s: str, neu_s: str, neg_s: str) -> str:
-    payload = (
-        f"Distribution: positive={sentiment.get('pos',0)}%, "
-        f"neutral={sentiment.get('neu',0)}%, negative={sentiment.get('neg',0)}%.\n\n"
-        f"Positive summary:\n{pos_s or '[none]'}\n\n"
-        f"Neutral summary:\n{neu_s or '[none]'}\n\n"
-        f"Negative summary:\n{neg_s or '[none]'}"
+def _plain_summary_fallback(label: str, blob: str) -> dict:
+    r = _call_llm_with_retry(
+        [
+            {"role": "system", "content": "Summarize in 5-6 concrete sentences. No quotes, no links."},
+            {"role": "user", "content": blob[:3500]},
+        ],
+        timeout=45,
+        temperature=0.3,
+        top_p=0.6
+    )
+    summary = _enforce_single_paragraph((r.choices[0].message.content or "").strip(), max_sentences=6)
+    return {
+        "topic": "",
+        "sentiment": label,
+        "low_confidence": True,
+        "claims": [{
+            "claim": summary,
+            "why_it_matters": "captures group gist",
+            "evidence": [],
+            "prevalence_hint": "medium"
+        }]
+    }
+
+def _render_group_paragraph(struct: dict, max_claims: int = 5) -> str:
+    """Turn structured claims into a tight paragraph (your prose, not the model's)."""
+    claims = struct.get("claims", [])[:max_claims]
+    if not claims:
+        return ""
+    # Sort by prevalence_hint
+    order = {"high": 0, "medium": 1, "low": 2}
+    claims.sort(key=lambda c: order.get(c.get("prevalence_hint","medium"), 1))
+    parts = []
+    for c in claims:
+        claim = c.get("claim", "").strip()
+        why = c.get("why_it_matters", "").strip()
+        if claim and why:
+            parts.append(f"{claim} ({why}).")
+        elif claim:
+            parts.append(claim if claim.endswith(".") else claim + ".")
+    text = " ".join(parts)
+    return _enforce_single_paragraph(text, max_sentences=7)
+
+def _final_tldr_from_structs(sentiment: dict, pos_struct: dict, neu_struct: dict, neg_struct: dict) -> str:
+    topic = (
+        pos_struct.get("topic")
+        or neu_struct.get("topic")
+        or neg_struct.get("topic")
+        or "the post"
+    )
+    payload = _FINAL_USER_TMPL.format(
+        topic=topic,
+        pos_json=json.dumps(pos_struct.get("claims", []), ensure_ascii=False),
+        neu_json=json.dumps(neu_struct.get("claims", []), ensure_ascii=False),
+        neg_json=json.dumps(neg_struct.get("claims", []), ensure_ascii=False),
+        pos=float(sentiment.get("pos", 0)),
+        neu=float(sentiment.get("neu", 0)),
+        neg=float(sentiment.get("neg", 0)),
     )
     r = _call_llm_with_retry(
         [
@@ -206,6 +308,8 @@ def _final_tldr_from_groups(sentiment: dict, pos_s: str, neu_s: str, neg_s: str)
             {"role": "user", "content": payload},
         ],
         timeout=75,
+        temperature=0.2,  # tighter prose
+        top_p=0.3
     )
     return _enforce_single_paragraph((r.choices[0].message.content or "").strip(), max_sentences=10)
 
@@ -278,16 +382,25 @@ def index():
             neu_texts = [t for _, t in groups.get("neu", [])][:180]
             neg_texts = [t for _, t in groups.get("neg", [])][:180]
 
-            # Run the three group summaries in parallel
+            # Run the three group extractions in parallel
             with ThreadPoolExecutor(max_workers=3) as ex:
-                f_pos = ex.submit(_summarize_group, "positive", pos_texts)
-                f_neu = ex.submit(_summarize_group, "neutral", neu_texts)
-                f_neg = ex.submit(_summarize_group, "negative", neg_texts)
-                pos_summary = f_pos.result()
-                neu_summary = f_neu.result()
-                neg_summary = f_neg.result()
+                f_pos = ex.submit(_extract_group_claims, "positive", pos_texts)
+                f_neu = ex.submit(_extract_group_claims, "neutral", neu_texts)
+                f_neg = ex.submit(_extract_group_claims, "negative", neg_texts)
+                pos_struct = f_pos.result()
+                neu_struct = f_neu.result()
+                neg_struct = f_neg.result()
 
-            summary = _final_tldr_from_groups(data.get("sentiment") or {}, pos_summary, neu_summary, neg_summary)
+            # Render claims to group paragraphs for UI (keeps cache shape stable)
+            pos_summary = _render_group_paragraph(pos_struct)
+            neu_summary = _render_group_paragraph(neu_struct)
+            neg_summary = _render_group_paragraph(neg_struct)
+
+            # Final TL;DR using structured data
+            summary = _final_tldr_from_structs(
+                data.get("sentiment") or {},
+                pos_struct, neu_struct, neg_struct
+            )
             _set_cache(cache_key, data, summary, pos_summary, neu_summary, neg_summary)
 
     current_url = url if request.method == "POST" else None
