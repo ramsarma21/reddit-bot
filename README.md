@@ -1,5 +1,5 @@
 # reddit-bot
-reddit tldr for posts
+Reddit TL;DR for posts
 
 Access via vercel link
 
