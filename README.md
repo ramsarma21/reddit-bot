@@ -9,6 +9,6 @@ Go to any reddit, thread and then click TL;DR.
 
 To access sentiment analysis, click on the dropdown arrows to read what ideas contributed to that specific sentiment.
 
-<img width="981" height="293" alt="image" src="https://github.com/user-attachments/assets/8908f856-4956-4368-870c-d8fbfadee7f9" />
+<img width="1092" height="803" alt="image" src="https://github.com/user-attachments/assets/894ef757-18ab-4e78-a26b-fa96ea2804dc" />
 
 Enjoy!
