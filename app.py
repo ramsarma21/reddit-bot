@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+from flask_cors import CORS  # <-- CORS for the extension
 
 from reddit_tldr import (
     fetch_submission_data,
@@ -37,6 +38,7 @@ if not OPENROUTER_API_KEY:
 llm = OpenAI(base_url=OPENROUTER_BASE, api_key=OPENROUTER_API_KEY)
 
 app = Flask(__name__, template_folder=str(Path(__file__).with_name("templates")))
+CORS(app, resources={r"/api/*": {"origins": "*"}})  # <-- allow extension to call JSON API
 
 # ---------- Rate limiting ----------
 limiter = Limiter(key_func=get_remote_address, app=app, default_limits=["20 per minute"])
@@ -140,8 +142,7 @@ def _call_llm_with_retry(messages, attempts: int = 3, timeout: int = 60, tempera
             time.sleep(0.6 * (i + 1))
     raise last
 
-# ====== NEW: Structured extractor prompts ======
-
+# ====== Structured extractor prompts ======
 _SYSTEM_GROUP = (
     "You summarize ONLY from the provided Reddit comments. "
     "No outside knowledge, no quotes, no usernames, no links. "
@@ -177,8 +178,7 @@ Comments:
 {blob}
 """
 
-# ====== NEW: Final TL;DR prompt ======
-
+# ====== Final TL;DR prompt ======
 _SYSTEM_FINAL = (
     "You write newsroom-quality TL;DRs. One paragraph. 110–140 words. "
     "No lists, no headers, no quotes, no hedging filler unless reflected in inputs. "
@@ -216,8 +216,7 @@ def _enforce_single_paragraph(text: str, max_sentences: int = 10) -> str:
     cleaned = _re.sub(r"\s{2,}", " ", cleaned).strip(" -–")
     return cleaned
 
-# ====== NEW: extractor + renderer ======
-
+# ====== extractor + renderer ======
 def _extract_group_claims(label: str, texts: list[str]) -> dict:
     blob = " ".join(texts)[:4000]
     if not blob.strip():
@@ -228,21 +227,18 @@ def _extract_group_claims(label: str, texts: list[str]) -> dict:
             {"role": "user", "content": _GROUP_USER_TMPL.format(label=label, blob=blob)},
         ],
         timeout=65,
-        temperature=0.2,   # precise extraction
-        top_p=0.9          # allow some diversity for claim discovery
+        temperature=0.2,
+        top_p=0.9
     )
     content = (r.choices[0].message.content or "").strip()
     try:
         data = json.loads(content)
-        # minimal validation
         if not isinstance(data, dict) or "claims" not in data:
             raise ValueError("bad schema")
         data.setdefault("low_confidence", False)
         return data
     except Exception:
-        # Fallback: create a single-claim structure from a plain summary
-        fallback = _plain_summary_fallback(label, blob)
-        return fallback
+        return _plain_summary_fallback(label, blob)
 
 def _plain_summary_fallback(label: str, blob: str) -> dict:
     r = _call_llm_with_retry(
@@ -268,11 +264,9 @@ def _plain_summary_fallback(label: str, blob: str) -> dict:
     }
 
 def _render_group_paragraph(struct: dict, max_claims: int = 5) -> str:
-    """Turn structured claims into a tight paragraph (your prose, not the model's)."""
     claims = struct.get("claims", [])[:max_claims]
     if not claims:
         return ""
-    # Sort by prevalence_hint
     order = {"high": 0, "medium": 1, "low": 2}
     claims.sort(key=lambda c: order.get(c.get("prevalence_hint","medium"), 1))
     parts = []
@@ -308,7 +302,7 @@ def _final_tldr_from_structs(sentiment: dict, pos_struct: dict, neu_struct: dict
             {"role": "user", "content": payload},
         ],
         timeout=75,
-        temperature=0.2,  # tighter prose
+        temperature=0.2,
         top_p=0.3
     )
     return _enforce_single_paragraph((r.choices[0].message.content or "").strip(), max_sentences=10)
@@ -318,17 +312,21 @@ def _final_tldr_from_structs(sentiment: dict, pos_struct: dict, neu_struct: dict
 @limiter.exempt
 def health():
     try:
-        r = llm.chat.completions.create(
-            model=OPENROUTER_MODEL,
-            messages=[{"role": "system", "content": "ping"}],
-            temperature=0,
-            top_p=0.1,
-            extra_body={"seed": 42},
-        )
-        ok = bool(r.choices[0].message.content)
-        return jsonify({"llm_ok": ok, "model": OPENROUTER_MODEL}), 200
-    except Exception as e:
-        return jsonify({"llm_ok": False, "error": str(e)}), 500
+        r = llm.chat(completions=None).completions  # type: ignore
+    except Exception:
+        # Simple, stable /health that still pings the model
+        try:
+            r = llm.chat.completions.create(
+                model=OPENROUTER_MODEL,
+                messages=[{"role": "system", "content": "ping"}],
+                temperature=0,
+                top_p=0.1,
+                extra_body={"seed": 42},
+            )
+            ok = bool(r.choices[0].message.content)
+            return jsonify({"llm_ok": ok, "model": OPENROUTER_MODEL}), 200
+        except Exception as e:
+            return jsonify({"llm_ok": False, "error": str(e)}), 500
 
 @app.route("/", methods=["GET", "POST"])
 @limiter.limit("20 per minute")
@@ -423,6 +421,68 @@ def index():
         "effective_max": data.get("effective_max") if data else None,
     }
     return render_template("index.html", **payload)
+
+# ---------- JSON API for the extension ----------
+@app.post("/api/summarize")
+@limiter.limit("20 per minute")
+def api_summarize():
+    payload = request.get_json(silent=True) or {}
+    raw_url = (payload.get("url") or "").strip()
+    sort = (payload.get("sort") or "top").strip() or "top"
+
+    if not raw_url:
+        return jsonify({"error": "Missing URL"}), 400
+
+    try:
+        url = normalize_reddit_url(raw_url)
+    except ValueError as ve:
+        return jsonify({"error": str(ve)}), 400
+
+    cache_key = _cache_key(url, sort, OPENROUTER_MODEL)
+    cached = _get_cache(cache_key)
+    if cached:
+        data, summary, pos_summary, neu_summary, neg_summary = cached
+    else:
+        try:
+            data = fetch_submission_data(url, sort=sort, max_comments=None)
+        except Exception as e:
+            msg = str(e)
+            if "timed out" in msg.lower() or "timeout" in msg.lower():
+                return jsonify({"error": "Reddit timed out"}), 504
+            return jsonify({"error": msg}), 500
+
+        groups = data.get("groups") or {}
+        pos_texts = [t for _, t in groups.get("pos", [])][:180]
+        neu_texts = [t for _, t in groups.get("neu", [])][:180]
+        neg_texts = [t for _, t in groups.get("neg", [])][:180]
+
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            f_pos = ex.submit(_extract_group_claims, "positive", pos_texts)
+            f_neu = ex.submit(_extract_group_claims, "neutral", neu_texts)
+            f_neg = ex.submit(_extract_group_claims, "negative", neg_texts)
+            pos_struct = f_pos.result()
+            neu_struct = f_neu.result()
+            neg_struct = f_neg.result()
+
+        pos_summary = _render_group_paragraph(pos_struct)
+        neu_summary = _render_group_paragraph(neu_struct)
+        neg_summary = _render_group_paragraph(neg_struct)
+
+        summary = _final_tldr_from_structs(
+            data.get("sentiment") or {}, pos_struct, neu_struct, neg_struct
+        )
+        _set_cache(cache_key, data, summary, pos_summary, neu_summary, neg_summary)
+
+    return jsonify({
+        "title": (data.get("title") if data else None),
+        "subreddit": (data.get("subreddit") if data else None),
+        "sentiment": (data.get("sentiment") if data else None),
+        "sample_size": (data.get("sample_size") if data else None),
+        "summary": summary,
+        "pos_summary": pos_summary,
+        "neu_summary": neu_summary,
+        "neg_summary": neg_summary
+    })
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5057, debug=True)
