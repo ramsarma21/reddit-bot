@@ -1,7 +1,7 @@
 # reddit-bot
 Reddit TL;DR for posts
 
-Access via vercel link for web view 
+Access via vercel link for web view for now (extension download coming soon!)
 
 Go to any reddit thread and then click the TL;DR button.
 
